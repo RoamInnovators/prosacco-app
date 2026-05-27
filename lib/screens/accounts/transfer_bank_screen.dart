@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../theme/prosacco_palette.dart';
 import '../../utils/prosacco_member_auth_api.dart';
+import '../../widgets/member_security_otp_dialog.dart';
 import '../../widgets/prosacco_animated_loader.dart';
 import 'account_flow_widgets.dart';
 import 'account_models.dart';
@@ -23,6 +24,7 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
   final _reason = TextEditingController();
   bool _favorite = false;
   List<MemberAccountOption> _options = const [];
+  List<String> _banks = const [];
   bool _loading = true;
   String? _loadError;
   bool _submitting = false;
@@ -30,7 +32,6 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
   @override
   void initState() {
     super.initState();
-    _bank = kKenyanBanks.first;
     _loadOptions();
   }
 
@@ -52,6 +53,7 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
       final picked = await api.fetchMemberAccountOptionsForPickers(
         token: widget.authToken,
       );
+      final banks = await api.fetchPublicBanks();
       final options = picked
           .map(
             (o) => MemberAccountOption(
@@ -67,6 +69,8 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
       if (!mounted) return;
       setState(() {
         _options = options;
+        _banks = banks;
+        _bank = banks.isNotEmpty ? banks.first : null;
         _source = options.isNotEmpty ? options.first : null;
         _loading = false;
       });
@@ -103,13 +107,33 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
     setState(() => _submitting = true);
     try {
       final api = ProsaccoMemberAuthApi();
-      await api.withdrawFosa(
-        token: widget.authToken,
-        amountCents: amountCents,
-        channel: 'BANK_TRANSFER',
-        bankName: _bank,
-        bankAccountNumber: _accountNo.text.trim(),
-      );
+      try {
+        await api.withdrawFosa(
+          token: widget.authToken,
+          amountCents: amountCents,
+          channel: 'BANK_TRANSFER',
+          bankName: _bank,
+          bankAccountNumber: _accountNo.text.trim(),
+        );
+      } on MemberSecurityOtpRequiredException catch (e) {
+        final challenge = await api.requestTransactionOtp(
+          token: widget.authToken,
+          purpose: e.purpose,
+          amountCents: e.amountCents,
+        );
+        if (!mounted) return;
+        final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
+        if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
+        await api.withdrawFosa(
+          token: widget.authToken,
+          amountCents: amountCents,
+          channel: 'BANK_TRANSFER',
+          bankName: _bank,
+          bankAccountNumber: _accountNo.text.trim(),
+          securityOtpChallengeId: challenge.challengeId,
+          securityOtpCode: code,
+        );
+      }
 
       if (!mounted) return;
       await showFlowSuccessSheet(
@@ -189,7 +213,7 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
                   borderRadius: BorderRadius.circular(14),
                 ),
               ),
-              items: kKenyanBanks
+              items: _banks
                   .map(
                     (b) => DropdownMenuItem(
                       value: b,

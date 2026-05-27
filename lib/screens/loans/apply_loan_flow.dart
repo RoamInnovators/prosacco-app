@@ -47,10 +47,34 @@ class _ApplyLoanFlowScreenState extends State<ApplyLoanFlowScreen> {
   double get _amountParsed =>
       double.tryParse(_amountCtrl.text.replaceAll(',', '')) ?? 0;
 
-  double get _emi {
-    final a = _amountParsed;
-    if (a <= 0 || _termMonths <= 0) return 0;
-    return (a / _termMonths) * 1.08;
+  AmortisationPreview? _preview;
+  bool _previewLoading = false;
+
+  double get _emi => (_preview?.monthlyPaymentCents ?? 0) / 100.0;
+
+  Future<void> _refreshPreview() async {
+    final amt = _amountParsed;
+    if (amt <= 0 || _termMonths <= 0) {
+      if (mounted) setState(() => _preview = null);
+      return;
+    }
+    setState(() => _previewLoading = true);
+    try {
+      final preview = await ProsaccoMemberAuthApi().fetchAmortisationPreview(
+        token: widget.authToken,
+        productId: widget.product.id,
+        amountCents: (amt * 100).round(),
+        months: _termMonths,
+      );
+      if (!mounted) return;
+      setState(() {
+        _preview = preview;
+        _previewLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _previewLoading = false);
+    }
   }
 
   int get _totalSteps => widget.product.needsGuarantors ? 2 : 1;
@@ -347,7 +371,10 @@ class _ApplyLoanFlowScreenState extends State<ApplyLoanFlowScreen> {
                     color: context.pal.outline,
                   ),
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) {
+              setState(() {});
+              _refreshPreview();
+            },
           ),
           const SizedBox(height: 8),
           Text(
@@ -376,7 +403,10 @@ class _ApplyLoanFlowScreenState extends State<ApplyLoanFlowScreen> {
                     : context.pal.surfaceContainerLowest,
                 borderRadius: BorderRadius.circular(12),
                 child: InkWell(
-                  onTap: () => setState(() => _termMonths = m),
+                  onTap: () {
+                    setState(() => _termMonths = m);
+                    _refreshPreview();
+                  },
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
@@ -431,8 +461,12 @@ class _ApplyLoanFlowScreenState extends State<ApplyLoanFlowScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    'Estimated installment ~ KES ${_emi.toStringAsFixed(2)} / month '
-                    '(illustrative). Final schedule confirmed on approval.',
+                    _previewLoading
+                        ? 'Calculating installment from SACCO rates…'
+                        : _emi > 0
+                            ? 'Estimated installment ~ KES ${_emi.toStringAsFixed(2)} / month. '
+                                'Final schedule confirmed on approval.'
+                            : 'Enter amount and term to see estimated installment.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: context.pal.onSurfaceVariant,
                           height: 1.4,

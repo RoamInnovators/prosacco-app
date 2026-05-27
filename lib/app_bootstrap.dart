@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'services/push_notifications_service.dart';
@@ -6,13 +7,14 @@ import 'screens/launch_screen.dart';
 import 'screens/member_home_screen.dart';
 import 'screens/member_otp_screen.dart';
 import 'screens/member_sign_in_screen.dart';
+import 'utils/balance_visibility.dart';
 import 'utils/prosacco_member_auth_api.dart';
 import 'widgets/toast/toast_service.dart';
 import 'widgets/toast/toast_variant.dart';
 
 enum _AppPhase { launch, signIn, otp, home }
 
-/// Launch → sign-in → OTP → dashboard (stub until APIs are wired).
+/// Launch → sign-in → OTP → member dashboard.
 class AppBootstrap extends StatefulWidget {
   const AppBootstrap({super.key});
 
@@ -26,10 +28,15 @@ class _AppBootstrapState extends State<AppBootstrap> {
   String _homeDisplayName = 'Member';
   String? _authToken;
   String? _mfaToken;
+  String? _deviceBindingToken;
+  String? _deviceBindingChallengeId;
   bool _sessionLoaded = false;
+  BalanceVisibilityController? _balanceVisibility;
 
   static const String _spTokenKey = 'prosacco_member_token';
   static const String _spDisplayNameKey = 'prosacco_member_display_name';
+  static const String _privacyConsentVersion = '2026-04-01';
+  static const String _spPrivacyConsentKey = 'prosacco_privacy_consent_version';
 
   Future<void> _loadSavedSession() async {
     if (_sessionLoaded) return;
@@ -68,6 +75,20 @@ class _AppBootstrapState extends State<AppBootstrap> {
     }
     if (!mounted) return;
     final hasToken = (_authToken ?? '').isNotEmpty;
+    if (hasToken && !await _requireBiometricIfAvailable()) {
+      await _clearSession();
+      _authToken = null;
+      if (!mounted) return;
+      setState(() => _phase = _AppPhase.signIn);
+      return;
+    }
+    if (hasToken && !await _ensurePrivacyConsent(_authToken!)) {
+      await _clearSession();
+      _authToken = null;
+      if (!mounted) return;
+      setState(() => _phase = _AppPhase.signIn);
+      return;
+    }
     setState(() => _phase = hasToken ? _AppPhase.home : _AppPhase.signIn);
   }
 
@@ -94,6 +115,10 @@ class _AppBootstrapState extends State<AppBootstrap> {
   void initState() {
     super.initState();
     _loadSavedSession();
+    BalanceVisibilityController.load().then((controller) {
+      if (!mounted) return;
+      setState(() => _balanceVisibility = controller);
+    });
   }
 
   @override
@@ -121,24 +146,36 @@ class _AppBootstrapState extends State<AppBootstrap> {
                 setState(() {
                   _loginIdentifier = null;
                   _mfaToken = null;
+                  _deviceBindingToken = null;
+                  _deviceBindingChallengeId = null;
                   _phase = _AppPhase.signIn;
                 });
               }
             },
           ),
-        _AppPhase.home => MemberHomeScreen(
-            key: const ValueKey('home'),
-            displayName: _homeDisplayName,
-            authToken: _authToken ?? '',
-            onSignedOut: () {
-              _clearSession();
-              _authToken = null;
-              _mfaToken = null;
-              _loginIdentifier = null;
-              _homeDisplayName = 'Member';
-              if (mounted) setState(() => _phase = _AppPhase.signIn);
-            },
-          ),
+        _AppPhase.home => _balanceVisibility == null
+            ? const Center(
+                key: ValueKey('home-loading'),
+                child: CircularProgressIndicator(),
+              )
+            : BalanceVisibilityScope(
+                key: const ValueKey('home'),
+                controller: _balanceVisibility!,
+                child: MemberHomeScreen(
+                  displayName: _homeDisplayName,
+                  authToken: _authToken ?? '',
+                  onSignedOut: () {
+                    _clearSession();
+                    _authToken = null;
+                    _mfaToken = null;
+                    _deviceBindingToken = null;
+                    _deviceBindingChallengeId = null;
+                    _loginIdentifier = null;
+                    _homeDisplayName = 'Member';
+                    if (mounted) setState(() => _phase = _AppPhase.signIn);
+                  },
+                ),
+              ),
       },
     );
   }
@@ -154,13 +191,67 @@ class _AppBootstrapState extends State<AppBootstrap> {
     });
   }
 
+  Future<bool> _requireBiometricIfAvailable() async {
+    final auth = LocalAuthentication();
+    try {
+      final supported = await auth.isDeviceSupported();
+      final canCheck = await auth.canCheckBiometrics;
+      if (!supported || !canCheck) return true;
+      return auth.authenticate(
+        localizedReason: 'Confirm it is you to access your ProSacco account.',
+        options: const AuthenticationOptions(
+          biometricOnly: false,
+          stickyAuth: true,
+        ),
+      );
+    } catch (_) {
+      return true;
+    }
+  }
+
+  Future<bool> _ensurePrivacyConsent(String token) async {
+    final sp = await SharedPreferences.getInstance();
+    if (sp.getString(_spPrivacyConsentKey) == _privacyConsentVersion) return true;
+    if (!mounted) return false;
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Privacy consent'),
+        content: const Text(
+          'Accept processing of your personal data for member portal services, security, fraud prevention, and regulatory compliance.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Decline'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+    if (accepted != true) return false;
+    await ProsaccoMemberAuthApi().recordPrivacyConsent(
+      token: token,
+      policyVersion: _privacyConsentVersion,
+    );
+    await sp.setString(_spPrivacyConsentKey, _privacyConsentVersion);
+    return true;
+  }
+
   Future<void> _handleLoginSubmitted(String id, String password) async {
     final api = ProsaccoMemberAuthApi();
     final res = await api.login(login: id, password: password);
 
     if (!mounted) return;
 
-    if (res.needsMfa) {
+    if (res.needsDeviceBinding) {
+      _deviceBindingToken = res.token;
+      _deviceBindingChallengeId = res.deviceBindingChallengeId;
+    } else if (res.needsMfa) {
       _mfaToken = res.token;
     } else {
       _authToken = res.token;
@@ -180,6 +271,25 @@ class _AppBootstrapState extends State<AppBootstrap> {
       return;
     }
 
+    if (res.needsDeviceBinding) {
+      setState(() {
+        _loginIdentifier = id;
+        _phase = _AppPhase.otp;
+      });
+      return;
+    }
+
+    if (!await _requireBiometricIfAvailable()) {
+      _authToken = null;
+      PushNotificationsService.setAuthToken(null);
+      throw 'Biometric verification was cancelled.';
+    }
+    if (_authToken != null && !await _ensurePrivacyConsent(_authToken!)) {
+      _authToken = null;
+      PushNotificationsService.setAuthToken(null);
+      throw 'Privacy consent is required to continue.';
+    }
+
     setState(() {
       _loginIdentifier = null;
       _phase = _AppPhase.home;
@@ -197,6 +307,9 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 
   Future<void> _handleResendOtp() async {
+    if (_deviceBindingToken != null) {
+      throw 'Return to sign in to request a new device verification code.';
+    }
     final token = _mfaToken;
     if (token == null || token.isEmpty) {
       throw 'Session expired. Please sign in again.';
@@ -206,6 +319,51 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 
   Future<void> _handleVerifyMfa(String code) async {
+    final deviceToken = _deviceBindingToken;
+    final deviceChallengeId = _deviceBindingChallengeId;
+    if (deviceToken != null && deviceToken.isNotEmpty && deviceChallengeId != null && deviceChallengeId.isNotEmpty) {
+      final api = ProsaccoMemberAuthApi();
+      final res = await api.verifyDeviceBinding(
+        token: deviceToken,
+        challengeId: deviceChallengeId,
+        code: code,
+      );
+
+      if (!mounted) return;
+      if (!await _requireBiometricIfAvailable()) {
+        throw 'Biometric verification was cancelled.';
+      }
+
+      _authToken = res.token;
+      PushNotificationsService.setAuthToken(_authToken);
+      _deviceBindingToken = null;
+      _deviceBindingChallengeId = null;
+      if (res.displayName != null && res.displayName!.isNotEmpty) {
+        _homeDisplayName = res.displayName!;
+      } else {
+        _setHomeDisplayNameFromIdentifier(_loginIdentifier);
+      }
+
+      setState(() {
+        _loginIdentifier = null;
+        _phase = _AppPhase.home;
+      });
+
+      if (!await _ensurePrivacyConsent(_authToken!)) {
+        _authToken = null;
+        PushNotificationsService.setAuthToken(null);
+        setState(() => _phase = _AppPhase.signIn);
+        throw 'Privacy consent is required to continue.';
+      }
+
+      await _persistSession(
+        token: _authToken!,
+        displayName: _homeDisplayName.trim(),
+      );
+      _enqueueWelcomeSnackBar('Device verified. Biometric login is ready.');
+      return;
+    }
+
     final token = _mfaToken;
     if (token == null || token.isEmpty) {
       throw 'Session expired. Please sign in again.';
@@ -214,6 +372,9 @@ class _AppBootstrapState extends State<AppBootstrap> {
     final res = await api.verifyMfa(token: token, code: code);
 
     if (!mounted) return;
+    if (!await _requireBiometricIfAvailable()) {
+      throw 'Biometric verification was cancelled.';
+    }
 
     _authToken = res.token;
     PushNotificationsService.setAuthToken(_authToken);
@@ -228,6 +389,13 @@ class _AppBootstrapState extends State<AppBootstrap> {
       _loginIdentifier = null;
       _phase = _AppPhase.home;
     });
+
+    if (!await _ensurePrivacyConsent(_authToken!)) {
+      _authToken = null;
+      PushNotificationsService.setAuthToken(null);
+      setState(() => _phase = _AppPhase.signIn);
+      throw 'Privacy consent is required to continue.';
+    }
 
     await _persistSession(
       token: _authToken!,

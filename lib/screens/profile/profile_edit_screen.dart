@@ -25,7 +25,9 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   late final TextEditingController _name;
   late final TextEditingController _phone;
   late final TextEditingController _email;
+  late final TextEditingController _otp;
   bool _saving = false;
+  bool _sendingOtp = false;
 
   @override
   void initState() {
@@ -33,6 +35,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     _name = TextEditingController(text: widget.initialFullName);
     _phone = TextEditingController(text: widget.initialPhone);
     _email = TextEditingController(text: widget.initialEmail);
+    _otp = TextEditingController();
   }
 
   @override
@@ -40,7 +43,29 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     _name.dispose();
     _phone.dispose();
     _email.dispose();
+    _otp.dispose();
     super.dispose();
+  }
+
+  Future<void> _requestOtp() async {
+    setState(() => _sendingOtp = true);
+    try {
+      await ProsaccoMemberAuthApi().requestProfileOtp(
+        token: widget.authToken,
+        purpose: 'PROFILE_CHANGE',
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('OTP sent by SMS.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e?.toString() ?? 'Failed to send OTP.')),
+      );
+    } finally {
+      if (mounted) setState(() => _sendingOtp = false);
+    }
   }
 
   @override
@@ -67,6 +92,18 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
           _field(context, 'Phone', _phone),
           const SizedBox(height: 16),
           _field(context, 'Email', _email),
+          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(child: _field(context, 'OTP approval code', _otp)),
+              const SizedBox(width: 12),
+              OutlinedButton(
+                onPressed: _sendingOtp ? null : _requestOtp,
+                child: Text(_sendingOtp ? 'Sending...' : 'Send OTP'),
+              ),
+            ],
+          ),
           const SizedBox(height: 32),
           FilledButton(
             onPressed: _saving
@@ -79,6 +116,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
                         token: widget.authToken,
                         phone: _phone.text.trim(),
                         email: _email.text.trim(),
+                        otpCode: _otp.text.trim(),
                       );
                       if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(

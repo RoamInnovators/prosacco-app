@@ -36,6 +36,18 @@ class _LoanApplicationReviewScreenState
     extends State<LoanApplicationReviewScreen> {
   bool _consented = false;
   bool _submitting = false;
+  String _disbursementMethod = 'FOSA';
+  final _mpesaPhone = TextEditingController();
+  final _bankName = TextEditingController();
+  final _bankAccount = TextEditingController();
+
+  @override
+  void dispose() {
+    _mpesaPhone.dispose();
+    _bankName.dispose();
+    _bankAccount.dispose();
+    super.dispose();
+  }
 
   Future<void> _doSubmit() async {
     if (_submitting) return;
@@ -43,6 +55,13 @@ class _LoanApplicationReviewScreenState
     try {
       final api = ProsaccoMemberAuthApi();
       final amountCents = (widget.amount * 100).round();
+      if (_disbursementMethod == 'MPESA' && _mpesaPhone.text.trim().isEmpty) {
+        throw 'Enter the M-Pesa phone number.';
+      }
+      if (_disbursementMethod == 'BANK_TRANSFER' &&
+          (_bankName.text.trim().isEmpty || _bankAccount.text.trim().isEmpty)) {
+        throw 'Enter the bank name and account number.';
+      }
 
       // Build guarantor list — split coverage equally
       List<LoanGuarantorInput>? guarantors;
@@ -73,7 +92,12 @@ class _LoanApplicationReviewScreenState
         loanProductId: widget.product.id,
         requestedAmountCents: amountCents,
         repaymentMonths: widget.termMonths,
-        disbursementMethod: 'FOSA',
+        disbursementMethod: _disbursementMethod,
+        disbursementDestination: _disbursementMethod == 'MPESA'
+            ? {'phone': _mpesaPhone.text.trim()}
+            : _disbursementMethod == 'BANK_TRANSFER'
+                ? {'bankName': _bankName.text.trim(), 'accountNumber': _bankAccount.text.trim()}
+                : null,
         guarantors: guarantors,
       );
       if (!mounted) return;
@@ -471,6 +495,58 @@ class _LoanApplicationReviewScreenState
               ],
             ),
           ),
+          const SizedBox(height: 20),
+          Text(
+            'Disbursement method',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: _disbursementMethod,
+            decoration: const InputDecoration(
+              labelText: 'Receive funds via',
+              border: OutlineInputBorder(),
+            ),
+            items: const [
+              DropdownMenuItem(value: 'FOSA', child: Text('Credit to FOSA')),
+              DropdownMenuItem(value: 'MPESA', child: Text('M-Pesa')),
+              DropdownMenuItem(value: 'BANK_TRANSFER', child: Text('Bank transfer')),
+              DropdownMenuItem(value: 'CASH', child: Text('Cash / branch clearing')),
+            ],
+            onChanged: (value) => setState(() => _disbursementMethod = value ?? 'FOSA'),
+          ),
+          if (_disbursementMethod == 'MPESA') ...[
+            const SizedBox(height: 10),
+            TextField(
+              controller: _mpesaPhone,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'M-Pesa phone',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+          if (_disbursementMethod == 'BANK_TRANSFER') ...[
+            const SizedBox(height: 10),
+            TextField(
+              controller: _bankName,
+              decoration: const InputDecoration(
+                labelText: 'Bank name',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _bankAccount,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Bank account number',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
           if (widget.guarantorNames.isNotEmpty) ...[
             const SizedBox(height: 20),
             Row(

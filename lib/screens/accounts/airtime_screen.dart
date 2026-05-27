@@ -2,11 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../theme/prosacco_palette.dart';
+import '../../utils/prosacco_member_auth_api.dart';
+import '../../widgets/prosacco_animated_loader.dart';
 import 'account_flow_widgets.dart';
 import 'account_models.dart';
 
 class AirtimeScreen extends StatefulWidget {
-  const AirtimeScreen({super.key});
+  const AirtimeScreen({super.key, required this.authToken});
+
+  final String authToken;
 
   @override
   State<AirtimeScreen> createState() => _AirtimeScreenState();
@@ -14,138 +18,314 @@ class AirtimeScreen extends StatefulWidget {
 
 class _AirtimeScreenState extends State<AirtimeScreen> {
   MemberAccountOption? _from;
+  MemberUtilityCatalog? _catalog;
+  MemberUtilityNetwork? _network;
+  MemberDataBundle? _bundle;
+  List<MemberTransferBeneficiaryData> _frequent = const [];
+  String _purchaseType = 'AIRTIME';
+  String _source = 'FOSA';
   final _phone = TextEditingController();
   final _amount = TextEditingController();
+  final _mpesaPhone = TextEditingController();
+  List<MemberAccountOption> _options = const [];
+  bool _loading = true;
+  bool _submitting = false;
+  String? _loadError;
 
   @override
   void initState() {
     super.initState();
-    _from = kMemberAccountOptions.firstWhere((a) => a.id == 'fosa',
-        orElse: () => kMemberAccountOptions.first);
+    _loadAccounts();
+  }
+
+  Future<void> _loadAccounts() async {
+    try {
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
+      final api = ProsaccoMemberAuthApi();
+      final catalog = await api.fetchUtilityPaymentCatalog(token: widget.authToken);
+      final profile = await api.fetchMemberProfile(token: widget.authToken);
+      final picked = await api.fetchMemberAccountOptionsForPickers(
+        token: widget.authToken,
+      );
+      final frequent = await api.fetchTransferBeneficiaries(token: widget.authToken);
+      if (!mounted) return;
+      setState(() {
+        _catalog = catalog;
+        _options = picked
+            .where((o) => o.id == 'fosa')
+            .map(
+              (o) => MemberAccountOption(
+                id: o.id,
+                name: o.name,
+                mask: o.mask,
+                balance: o.balanceCents / 100.0,
+              ),
+            )
+            .toList();
+        _frequent = frequent.where((b) => (b.phone ?? '').isNotEmpty).toList();
+        _from = _options.isNotEmpty
+            ? _options.firstWhere(
+                (a) => a.id == 'fosa',
+                orElse: () => _options.first,
+              )
+            : null;
+        _network = catalog.networks.isNotEmpty ? catalog.networks.first : null;
+        _phone.text = profile.phone;
+        _mpesaPhone.text = profile.phone;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = e?.toString() ?? 'Failed to load accounts.';
+        _loading = false;
+      });
+    }
   }
 
   @override
   void dispose() {
     _phone.dispose();
     _amount.dispose();
+    _mpesaPhone.dispose();
     super.dispose();
+  }
+
+  int? get _amountCents {
+    if (_purchaseType == 'DATA') return _bundle?.amountCents;
+    final amt = double.tryParse(_amount.text.replaceAll(',', ''));
+    return amt == null || amt <= 0 ? null : (amt * 100).round();
   }
 
   bool get _valid {
     final digits = _phone.text.replaceAll(RegExp(r'\D'), '');
-    final amt = double.tryParse(_amount.text.replaceAll(',', ''));
-    return digits.length >= 9 && amt != null && amt > 0 && _from != null;
+    final amount = _amountCents;
+    return digits.length >= 9 && amount != null && amount > 0 && _network != null;
   }
 
-  Future<void> _confirmAndPay() async {
-    if (!_valid) return;
-    final amt = double.parse(_amount.text.replaceAll(',', ''));
-    if (amt > _from!.balance) {
-      showFlowErrorSnack(
-        context,
-        'Insufficient balance in ${_from!.name}. '
-        'Available: KES ${formatKes(_from!.balance)}.',
-      );
+  Future<void> _submit() async {
+    final amountCents = _amountCents;
+    final network = _network;
+    if (!_valid || amountCents == null || network == null) return;
+    if (_source == 'FOSA' && _from != null && amountCents > (_from!.balance * 100).round()) {
+      showFlowErrorSnack(context, 'Insufficient FOSA balance.');
       return;
     }
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        final p = ctx.pal;
-        return AlertDialog(
-          title: Text('Buy airtime?', style: TextStyle(color: p.headlineGreen)),
-          content: Text(
-            'KES ${formatKes(amt)} to ${_phone.text.trim()} from ${_from!.name}?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Confirm'),
-            ),
-          ],
-        );
-      },
-    );
-    if (ok == true && mounted) {
+    setState(() => _submitting = true);
+    try {
+      final result = await ProsaccoMemberAuthApi().submitUtilityPayment(
+        token: widget.authToken,
+        paymentType: _purchaseType,
+        amountCents: amountCents,
+        paymentSource: _source,
+        network: network.code,
+        providerName: network.name,
+        recipientPhone: _phone.text.trim(),
+        productCode: _bundle?.code,
+        productName: _bundle?.name,
+        sourcePhone: _mpesaPhone.text.trim(),
+        saveRecipient: false,
+      );
+      if (!mounted) return;
       await showFlowSuccessSheet(
         context,
-        title: 'Airtime sent',
-        message:
-            'KES ${formatKes(amt)} airtime purchased for ${_phone.text.trim()}.',
+        title: 'Request recorded',
+        message: '${network.name} ${_purchaseType == 'DATA' ? 'data' : 'airtime'} request ref ${result.transactionRef} is ${result.status}. ${result.message}',
+        icon: Icons.phone_android_rounded,
       );
+    } catch (e) {
+      if (!mounted) return;
+      showFlowErrorSnack(context, e?.toString() ?? 'Payment request failed.');
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final p = context.pal;
+    if (_loading) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Buy airtime')),
+        body: const Center(child: ProsaccoAnimatedLoader(size: 110)),
+      );
+    }
+
+    final catalog = _catalog;
     return Scaffold(
       backgroundColor: p.surface,
-      appBar: AppBar(title: const Text('Buy airtime')),
+      appBar: AppBar(title: const Text('Airtime & Data')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
         children: [
+          if (_loadError != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(_loadError!, style: TextStyle(color: p.error)),
+            ),
+          if (catalog == null || !catalog.enabled)
+            const FlowSectionCard(
+              title: 'Not available',
+              child: Text('Airtime and data are not enabled by your SACCO yet.'),
+            )
+          else ...[
           FlowSectionCard(
-            title: 'Pay from',
-            child: DropdownButtonFormField<MemberAccountOption>(
-              value: _from,
-              decoration: InputDecoration(
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              items: kMemberAccountOptions
-                  .map(
-                    (a) => DropdownMenuItem(
-                      value: a,
-                      child: Text(a.name),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (v) => setState(() => _from = v),
+            title: 'Network',
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: catalog.networks.map((n) {
+                final selected = _network?.code == n.code;
+                return ChoiceChip(
+                  selected: selected,
+                  avatar: _NetworkLogo(network: n),
+                  label: Text(n.name),
+                  onSelected: (_) => setState(() {
+                    _network = n;
+                    _bundle = null;
+                  }),
+                );
+              }).toList(),
+            ),
+          ),
+          const SizedBox(height: 14),
+          FlowSectionCard(
+            title: 'Airtime or data',
+            child: SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'AIRTIME', label: Text('Airtime')),
+                ButtonSegment(value: 'DATA', label: Text('Data Bundles')),
+              ],
+              selected: {_purchaseType},
+              onSelectionChanged: (v) => setState(() {
+                _purchaseType = v.first;
+                _bundle = null;
+              }),
             ),
           ),
           const SizedBox(height: 14),
           FlowSectionCard(
             title: 'Destination number',
-            child: TextField(
-              controller: _phone,
-              keyboardType: TextInputType.phone,
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[\d+\s]')),
-              ],
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                hintText: '07XX XXX XXX',
-                prefixIcon: Icon(Icons.phone_rounded, color: p.primary),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
+            child: Column(
+              children: [
+                if (_frequent.isNotEmpty)
+                  SizedBox(
+                    height: 42,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _frequent.length.clamp(0, 6),
+                      separatorBuilder: (_, __) => const SizedBox(width: 8),
+                      itemBuilder: (_, i) {
+                        final b = _frequent[i];
+                        return ActionChip(
+                          label: Text(b.nickname),
+                          onPressed: () => setState(() => _phone.text = b.phone ?? ''),
+                        );
+                      },
+                    ),
+                  ),
+                if (_frequent.isNotEmpty) const SizedBox(height: 10),
+                TextField(
+                  controller: _phone,
+                  keyboardType: TextInputType.phone,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[\d+\s]')),
+                  ],
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: '07XX XXX XXX',
+                    prefixIcon: Icon(Icons.phone_rounded, color: p.primary),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
           const SizedBox(height: 14),
-          FlowSectionCard(
-            title: 'Amount',
-            child: TextField(
-              controller: _amount,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                prefixText: 'KES ',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
+          if (_purchaseType == 'AIRTIME')
+            FlowSectionCard(
+              title: 'Amount',
+              child: Column(
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [10, 20, 50, 100, 200, 500].map((v) {
+                      return ActionChip(
+                        label: Text('KES $v'),
+                        onPressed: () => setState(() => _amount.text = '$v'),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _amount,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
+                      prefixText: 'KES ',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                  ),
+                ],
               ),
+            )
+          else
+            FlowSectionCard(
+              title: 'Bundle',
+              child: (_network?.bundles.isEmpty ?? true)
+                  ? const Text('No data bundles configured for this network yet.')
+                  : Column(
+                      children: _network!.bundles.map((bundle) {
+                        return RadioListTile<MemberDataBundle>(
+                          value: bundle,
+                          groupValue: _bundle,
+                          onChanged: (v) => setState(() => _bundle = v),
+                          title: Text(bundle.name),
+                          subtitle: Text(bundle.validity ?? 'Data bundle'),
+                          secondary: Text('KES ${formatKes(bundle.amountCents / 100)}'),
+                        );
+                      }).toList(),
+                    ),
+            ),
+          const SizedBox(height: 14),
+          FlowSectionCard(
+            title: 'Payment source',
+            child: Column(
+              children: [
+                RadioListTile<String>(
+                  value: 'FOSA',
+                  groupValue: _source,
+                  onChanged: (_) => setState(() => _source = 'FOSA'),
+                  title: const Text('FOSA account'),
+                  subtitle: Text(_from == null ? 'No active FOSA' : 'Bal: KES ${formatKes(_from!.balance)}'),
+                ),
+                RadioListTile<String>(
+                  value: 'MPESA',
+                  groupValue: _source,
+                  onChanged: catalog.mpesaEnabled ? (_) => setState(() => _source = 'MPESA') : null,
+                  title: const Text('M-Pesa STK Push'),
+                  subtitle: Text(catalog.mpesaEnabled ? 'Use phone prompt' : 'Not enabled by SACCO'),
+                ),
+                if (_source == 'MPESA')
+                  TextField(
+                    controller: _mpesaPhone,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(labelText: 'M-Pesa phone', border: OutlineInputBorder()),
+                  ),
+              ],
             ),
           ),
           const SizedBox(height: 24),
           FilledButton(
-            onPressed: _valid ? _confirmAndPay : null,
+            onPressed: _valid && !_submitting ? _submit : null,
             style: FilledButton.styleFrom(
               backgroundColor: p.primary,
               foregroundColor: Colors.white,
@@ -155,12 +335,27 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
               ),
             ),
             child: const Text(
-              'Confirm purchase',
+              'Submit request',
               style: TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
+          ],
         ],
       ),
     );
+  }
+}
+
+class _NetworkLogo extends StatelessWidget {
+  const _NetworkLogo({required this.network});
+  final MemberUtilityNetwork network;
+
+  @override
+  Widget build(BuildContext context) {
+    final url = network.logoUrl;
+    if (url != null && url.isNotEmpty) {
+      return CircleAvatar(backgroundImage: NetworkImage(url));
+    }
+    return CircleAvatar(child: Text(network.name.isEmpty ? '?' : network.name.substring(0, 1).toUpperCase()));
   }
 }

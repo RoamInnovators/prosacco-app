@@ -46,6 +46,8 @@
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Camera access is required to scan payment QR codes.</string>
+	<string>Camera access is required to scan payment QR codes and take a live profile selfie.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Photo library access is required to choose a profile picture.</string>
 </dict>
 </plist>

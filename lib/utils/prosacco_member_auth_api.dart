@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
+import 'package:shared_preferences/shared_preferences.dart';
 import '../screens/statements/statement_models.dart';
 
 /// Minimal HTTP integration for the member portal auth endpoints.
@@ -11,6 +13,27 @@ class ProsaccoMemberAuthApi {
   /// If the hosted backend is behind a prefix (e.g. `/api`), we fall back
   /// to `/api/member/login` when `/member/login` returns 404.
   static const String baseUrl = 'https://prosaccobackend.tracom.co.ke';
+  static const String _deviceIdKey = 'prosacco_native_device_id';
+
+  Future<Map<String, String>> _deviceHeaders() async {
+    final sp = await SharedPreferences.getInstance();
+    var deviceId = sp.getString(_deviceIdKey);
+    if (deviceId == null || deviceId.isEmpty) {
+      final random = Random.secure();
+      final suffix = List<int>.generate(16, (_) => random.nextInt(256))
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+      deviceId = 'prosacco-${DateTime.now().millisecondsSinceEpoch}-$suffix';
+      await sp.setString(_deviceIdKey, deviceId);
+    }
+    return <String, String>{
+      'X-Prosacco-Device-Id': deviceId,
+      'X-Prosacco-Device-Platform': Platform.operatingSystem,
+      'X-Prosacco-Device-OS': Platform.operatingSystemVersion,
+      'X-Prosacco-Device-Brand': Platform.isIOS ? 'Apple' : 'Android',
+      'X-Prosacco-Device-Model': Platform.operatingSystem,
+    };
+  }
 
   /// Member accounts overview (BOSA / FOSA / shares / FD / special savings).
   /// Used by the Accounts page.
@@ -395,6 +418,139 @@ class ProsaccoMemberAuthApi {
     throw lastError ?? 'Failed to load banks.';
   }
 
+  Future<MemberUtilityCatalog> fetchUtilityPaymentCatalog({
+    required String token,
+  }) async {
+    final tryPaths = <String>[
+      '/member/utility-payments/catalog',
+      '/api/member/utility-payments/catalog',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode == 404) continue;
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to load bill payment options (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected bill payment options response.';
+        return MemberUtilityCatalog.fromJson(decoded.cast<String, dynamic>());
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load bill payment options.';
+  }
+
+  Future<MemberUtilityValidation> validateUtilityPayment({
+    required String token,
+    required String paymentType,
+    String? category,
+    String? providerCode,
+    String? customerReference,
+    String? network,
+    String? recipientPhone,
+    String? productCode,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{
+      'paymentType': paymentType,
+      'category': category,
+      'providerCode': providerCode,
+      'customerReference': customerReference,
+      'network': network,
+      'recipientPhone': recipientPhone,
+      'productCode': productCode,
+    });
+    final tryPaths = <String>[
+      '/member/utility-payments/validate',
+      '/api/member/utility-payments/validate',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode == 404) continue;
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Could not validate details (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected validation response.';
+        return MemberUtilityValidation.fromJson(decoded.cast<String, dynamic>());
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Could not validate details.';
+  }
+
+  Future<MemberUtilityRequestResult> submitUtilityPayment({
+    required String token,
+    required String paymentType,
+    required int amountCents,
+    required String paymentSource,
+    String? category,
+    String? providerCode,
+    String? providerName,
+    String? customerReference,
+    String? customerName,
+    String? recipientPhone,
+    String? network,
+    String? productCode,
+    String? productName,
+    String? sourcePhone,
+    bool saveRecipient = false,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{
+      'paymentType': paymentType,
+      'category': category,
+      'providerCode': providerCode,
+      'providerName': providerName,
+      'customerReference': customerReference,
+      'customerName': customerName,
+      'recipientPhone': recipientPhone,
+      'network': network,
+      'productCode': productCode,
+      'productName': productName,
+      'amountCents': amountCents,
+      'paymentSource': paymentSource,
+      'sourcePhone': sourcePhone,
+      'saveRecipient': saveRecipient,
+    });
+    final tryPaths = <String>[
+      '/member/utility-payments/requests',
+      '/api/member/utility-payments/requests',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode == 404) continue;
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Payment request failed (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected payment response.';
+        return MemberUtilityRequestResult.fromJson(decoded.cast<String, dynamic>());
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Payment request failed.';
+  }
+
   Future<String> initiateFosaDepositPaystack({
     required String token,
     required int amountCents,
@@ -463,6 +619,8 @@ class ProsaccoMemberAuthApi {
     String? phoneNumber,
     String? bankName,
     String? bankAccountNumber,
+    String? securityOtpChallengeId,
+    String? securityOtpCode,
   }) async {
     final body = jsonEncode(<String, dynamic>{
       'amountCents': amountCents,
@@ -470,6 +628,8 @@ class ProsaccoMemberAuthApi {
       'phoneNumber': phoneNumber,
       'bankName': bankName,
       'bankAccountNumber': bankAccountNumber,
+      'securityOtpChallengeId': securityOtpChallengeId,
+      'securityOtpCode': securityOtpCode,
     }..removeWhere((_, v) => v == null));
 
     final tryPaths = <String>[
@@ -484,6 +644,13 @@ class ProsaccoMemberAuthApi {
         final res = await _postJson(uri, body, token: token);
         final decoded = _tryDecodeJson(res.bodyText);
         if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 428 && decoded is Map && decoded['requiresOtp'] == true) {
+            throw MemberSecurityOtpRequiredException(
+              purpose: 'FOSA_WITHDRAWAL',
+              amountCents: amountCents,
+              message: decoded['error']?.toString() ?? 'OTP is required.',
+            );
+          }
           final msg = (decoded is Map && decoded['error'] != null)
               ? decoded['error'].toString()
               : 'Withdrawal failed (${res.statusCode}).';
@@ -502,11 +669,15 @@ class ProsaccoMemberAuthApi {
     required String token,
     required String recipientMemberId,
     required int amountCents,
+    String? securityOtpChallengeId,
+    String? securityOtpCode,
   }) async {
     final body = jsonEncode(<String, dynamic>{
       'recipientMemberId': recipientMemberId,
       'amountCents': amountCents,
-    });
+      'securityOtpChallengeId': securityOtpChallengeId,
+      'securityOtpCode': securityOtpCode,
+    }..removeWhere((_, v) => v == null));
 
     final tryPaths = <String>[
       '/member/accounts/fosa/send-to-member',
@@ -520,6 +691,13 @@ class ProsaccoMemberAuthApi {
         final res = await _postJson(uri, body, token: token);
         final decoded = _tryDecodeJson(res.bodyText);
         if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 428 && decoded is Map && decoded['requiresOtp'] == true) {
+            throw MemberSecurityOtpRequiredException(
+              purpose: 'FOSA_SEND_TO_MEMBER',
+              amountCents: amountCents,
+              message: decoded['error']?.toString() ?? 'OTP is required.',
+            );
+          }
           final msg = (decoded is Map && decoded['error'] != null)
               ? decoded['error'].toString()
               : 'Transfer failed (${res.statusCode}).';
@@ -540,8 +718,14 @@ class ProsaccoMemberAuthApi {
   Future<void> transferFosaToBosa({
     required String token,
     required int amountCents,
+    String? securityOtpChallengeId,
+    String? securityOtpCode,
   }) async {
-    final body = jsonEncode(<String, dynamic>{'amountCents': amountCents});
+    final body = jsonEncode(<String, dynamic>{
+      'amountCents': amountCents,
+      'securityOtpChallengeId': securityOtpChallengeId,
+      'securityOtpCode': securityOtpCode,
+    }..removeWhere((_, v) => v == null));
     final tryPaths = <String>[
       '/member/accounts/fosa/transfer-to-bosa',
       '/api/member/accounts/fosa/transfer-to-bosa',
@@ -553,6 +737,13 @@ class ProsaccoMemberAuthApi {
         final res = await _postJson(uri, body, token: token);
         final decoded = _tryDecodeJson(res.bodyText);
         if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 428 && decoded is Map && decoded['requiresOtp'] == true) {
+            throw MemberSecurityOtpRequiredException(
+              purpose: 'FOSA_TO_BOSA_TRANSFER',
+              amountCents: amountCents,
+              message: decoded['error']?.toString() ?? 'OTP is required.',
+            );
+          }
           final msg = (decoded is Map && decoded['error'] != null)
               ? decoded['error'].toString()
               : 'Transfer failed (${res.statusCode}).';
@@ -564,6 +755,45 @@ class ProsaccoMemberAuthApi {
       }
     }
     throw lastError ?? 'Transfer failed.';
+  }
+
+  Future<MemberTransactionOtpChallenge> requestTransactionOtp({
+    required String token,
+    required String purpose,
+    required int amountCents,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{
+      'purpose': purpose,
+      'amountCents': amountCents,
+    });
+    final tryPaths = <String>[
+      '/member/accounts/security/otp/request',
+      '/api/member/accounts/security/otp/request',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Could not send OTP (${res.statusCode}).';
+          throw msg;
+        }
+        if (decoded is! Map) throw 'Unexpected OTP response.';
+        return MemberTransactionOtpChallenge(
+          challengeId: decoded['challengeId']?.toString() ?? '',
+          sentTo: decoded['sentTo']?.toString(),
+          channel: decoded['channel']?.toString(),
+        );
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Could not send OTP.';
   }
 
   // ── Share Capital ──────────────────────────────────────────────────────────
@@ -736,6 +966,47 @@ class ProsaccoMemberAuthApi {
   ///
   /// Backend: `GET /member/statements/accounts`
   Future<List<StatementAccount>> fetchMemberStatementsAccounts({
+    required String token,
+  }) async {
+    final accounts = await _fetchStatementAccountsList(token: token);
+    try {
+      final overview = await fetchMemberAccountsOverview(token: token);
+      return accounts.map((account) {
+        final type = (account.backendAccountType ?? '').toUpperCase();
+        var balance = account.balance;
+        switch (type) {
+          case 'BOSA':
+            balance = (overview.bosa.account?.balanceCents ?? 0) / 100.0;
+          case 'FOSA':
+            balance = (overview.fosa.account?.balanceCents ?? 0) / 100.0;
+          case 'SHARES':
+            balance =
+                (overview.shareCapital.account?.totalAmountCents ?? 0) / 100.0;
+          case 'FD':
+            for (final fd in overview.fixedDeposits.deposits) {
+              if (fd.id == account.id) {
+                balance = fd.principalCents / 100.0;
+                break;
+              }
+            }
+          default:
+            break;
+        }
+        return StatementAccount(
+          id: account.id,
+          name: account.name,
+          accountMask: account.accountMask,
+          balance: balance,
+          tagline: account.tagline,
+          backendAccountType: account.backendAccountType,
+        );
+      }).toList();
+    } catch (_) {
+      return accounts;
+    }
+  }
+
+  Future<List<StatementAccount>> _fetchStatementAccountsList({
     required String token,
   }) async {
     final tryPaths = <String>[
@@ -985,10 +1256,12 @@ class ProsaccoMemberAuthApi {
     required String token,
     String? phone,
     String? email,
+    required String otpCode,
   }) async {
     final body = jsonEncode(<String, dynamic>{
       'phone': phone,
       'email': email,
+      'otpCode': otpCode,
     }..removeWhere((_, v) => v == null));
 
     final tryPaths = <String>[
@@ -1013,6 +1286,35 @@ class ProsaccoMemberAuthApi {
       }
     }
     throw lastError ?? 'Failed to update profile.';
+  }
+
+  Future<void> requestProfileOtp({
+    required String token,
+    required String purpose,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{'purpose': purpose});
+    final tryPaths = <String>[
+      '/member/me/profile/otp',
+      '/api/member/me/profile/otp',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to send OTP (${res.statusCode}).';
+          throw msg;
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to send OTP.';
   }
 
   Future<MemberSecurityData> fetchMemberSecurity({
@@ -1044,6 +1346,94 @@ class ProsaccoMemberAuthApi {
       }
     }
     throw lastError ?? 'Failed to load security.';
+  }
+
+  Future<MemberMfaSetupResult> setupMemberMfa({
+    required String token,
+    required String method,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{'method': method});
+    final tryPaths = <String>[
+      '/member/me/mfa/setup',
+      '/api/member/me/mfa/setup',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'MFA setup failed (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected MFA setup response.';
+        return MemberMfaSetupResult.fromJson(decoded.cast<String, dynamic>());
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'MFA setup failed.';
+  }
+
+  Future<void> verifyMemberMfaSetup({
+    required String token,
+    required String code,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{'code': code});
+    final tryPaths = <String>[
+      '/member/me/mfa/verify',
+      '/api/member/me/mfa/verify',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final decoded = _tryDecodeJson(res.bodyText);
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Invalid verification code.';
+        }
+        return;
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'MFA verification failed.';
+  }
+
+  Future<void> disableMemberMfa({
+    required String token,
+    required String password,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{'password': password});
+    final tryPaths = <String>[
+      '/member/me/mfa/disable',
+      '/api/member/me/mfa/disable',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final decoded = _tryDecodeJson(res.bodyText);
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Could not disable MFA.';
+        }
+        return;
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Could not disable MFA.';
   }
 
   Future<void> changeMemberPassword({
@@ -1178,9 +1568,16 @@ class ProsaccoMemberAuthApi {
               (b) => MemberBeneficiaryData(
                 id: b['id']?.toString() ?? '',
                 name: b['name']?.toString() ?? '—',
+                fullName: b['fullName']?.toString() ?? b['name']?.toString() ?? '',
                 relationship: b['relationship']?.toString() ?? '—',
                 share: b['share']?.toString() ?? '—',
                 nationalId: b['nationalId']?.toString() ?? '—',
+                phone: b['phone']?.toString() ?? '',
+                email: b['email']?.toString() ?? '',
+                physicalAddress: b['physicalAddress']?.toString() ?? '',
+                dateOfBirth: b['dateOfBirth']?.toString(),
+                nominationPercent: int.tryParse(b['nominationPercent']?.toString() ?? ''),
+                isSecondary: b['isSecondary'] == true,
               ),
             )
             .where((b) => b.id.isNotEmpty)
@@ -1190,6 +1587,133 @@ class ProsaccoMemberAuthApi {
       }
     }
     throw lastError ?? 'Failed to load beneficiaries.';
+  }
+
+  Future<void> saveMemberBeneficiary({
+    required String token,
+    String? id,
+    required Map<String, dynamic> payload,
+    required String otpCode,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{...payload, 'otpCode': otpCode});
+    final tryPaths = <String>[
+      id == null ? '/member/me/beneficiaries' : '/member/me/beneficiaries/$id',
+      id == null ? '/api/member/me/beneficiaries' : '/api/member/me/beneficiaries/$id',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = id == null
+            ? await _postJson(uri, body, token: token)
+            : await _patchJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to save beneficiary (${res.statusCode}).';
+          throw msg;
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to save beneficiary.';
+  }
+
+  Future<List<MemberTransferBeneficiaryData>> fetchTransferBeneficiaries({
+    required String token,
+  }) async {
+    final tryPaths = <String>[
+      '/member/accounts/beneficiaries',
+      '/api/member/accounts/beneficiaries',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to load transfer beneficiaries (${res.statusCode}).';
+          throw msg;
+        }
+        if (decoded is! Map) throw 'Unexpected beneficiaries response.';
+        final list = decoded['beneficiaries'];
+        if (list is! List) return const [];
+        return list
+            .whereType<Map>()
+            .map(MemberTransferBeneficiaryData.fromJson)
+            .where((b) => b.id.isNotEmpty)
+            .toList();
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load transfer beneficiaries.';
+  }
+
+  Future<void> saveTransferBeneficiary({
+    required String token,
+    String? id,
+    required Map<String, dynamic> payload,
+  }) async {
+    final body = jsonEncode(payload);
+    final tryPaths = <String>[
+      id == null ? '/member/accounts/beneficiaries' : '/member/accounts/beneficiaries/$id',
+      id == null ? '/api/member/accounts/beneficiaries' : '/api/member/accounts/beneficiaries/$id',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = id == null
+            ? await _postJson(uri, body, token: token)
+            : await _patchJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to save transfer beneficiary (${res.statusCode}).';
+          throw msg;
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to save transfer beneficiary.';
+  }
+
+  Future<void> deleteTransferBeneficiary({
+    required String token,
+    required String id,
+  }) async {
+    final tryPaths = <String>[
+      '/member/accounts/beneficiaries/$id',
+      '/api/member/accounts/beneficiaries/$id',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _delete(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to delete transfer beneficiary (${res.statusCode}).';
+          throw msg;
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to delete transfer beneficiary.';
   }
 
   Future<List<MemberKycDocumentData>> fetchMemberKycDocuments({
@@ -1550,7 +2074,9 @@ class ProsaccoMemberAuthApi {
         }
 
         final needsMfa = decoded['needsMfa'] == true;
+        final needsDeviceBinding = decoded['needsDeviceBinding'] == true;
         final token = decoded['token'] as String?;
+        final challengeId = decoded['challengeId'] as String?;
         final mfaMethod = decoded['mfaMethod'] as String?;
         final memberJson = decoded['member'] as Map?;
         final displayName = memberJson?['displayName'] as String?;
@@ -1558,6 +2084,8 @@ class ProsaccoMemberAuthApi {
         return _MemberLoginResponse(
           token: token,
           needsMfa: needsMfa,
+          needsDeviceBinding: needsDeviceBinding,
+          deviceBindingChallengeId: challengeId,
           mfaMethod: mfaMethod,
           displayName: displayName,
         );
@@ -1570,6 +2098,109 @@ class ProsaccoMemberAuthApi {
     }
 
     throw lastError ?? 'Login failed.';
+  }
+
+  Future<MemberTransactionOtpChallenge> requestPasswordReset({
+    required String login,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{'login': login});
+    final tryPaths = <String>[
+      '/member/forgot-password',
+      '/api/member/forgot-password',
+    ];
+
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body);
+        if (res.statusCode == 404 && path == '/member/forgot-password') continue;
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Could not request password reset (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected reset response.';
+        return MemberTransactionOtpChallenge(
+          challengeId: decoded['challengeId']?.toString() ?? '',
+          sentTo: decoded['sentTo']?.toString(),
+          channel: decoded['channel']?.toString(),
+        );
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Could not request password reset.';
+  }
+
+  Future<void> resetPassword({
+    required String login,
+    required String challengeId,
+    required String code,
+    required String password,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{
+      'login': login,
+      'challengeId': challengeId,
+      'code': code,
+      'password': password,
+    });
+    final tryPaths = <String>[
+      '/member/reset-password',
+      '/api/member/reset-password',
+    ];
+
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body);
+        if (res.statusCode == 404 && path == '/member/reset-password') continue;
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Password reset failed (${res.statusCode}).';
+        }
+        return;
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Password reset failed.';
+  }
+
+  Future<void> recordPrivacyConsent({
+    required String token,
+    required String policyVersion,
+    String channel = 'MOBILE_APP',
+  }) async {
+    final body = jsonEncode(<String, dynamic>{
+      'channel': channel,
+      'policyType': 'PRIVACY_POLICY',
+      'policyVersion': policyVersion,
+      'accepted': true,
+      'metadata': {'source': 'mobile_app'},
+    });
+    final tryPaths = <String>[
+      '/member/consents',
+      '/api/member/consents',
+    ];
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      final res = await _postJson(uri, body, token: token);
+      if (res.statusCode == 404 && path == '/member/consents') continue;
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        final decoded = _tryDecodeJson(res.bodyText);
+        throw (decoded is Map && decoded['error'] != null)
+            ? decoded['error'].toString()
+            : 'Could not record privacy consent (${res.statusCode}).';
+      }
+      return;
+    }
   }
 
   Future<void> resendOtp({required String token}) async {
@@ -1600,6 +2231,57 @@ class ProsaccoMemberAuthApi {
       }
     }
     throw lastError ?? 'Failed to resend OTP.';
+  }
+
+  Future<_MemberVerifyMfaResponse> verifyDeviceBinding({
+    required String token,
+    required String challengeId,
+    required String code,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{
+      'token': token,
+      'challengeId': challengeId,
+      'code': code,
+    });
+
+    final tryPaths = <String>[
+      '/member/device-binding/verify',
+      '/api/member/device-binding/verify',
+    ];
+
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body);
+        if (res.statusCode == 404 && path == '/member/device-binding/verify') continue;
+
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Device verification failed (${res.statusCode}).';
+          throw msg;
+        }
+        if (decoded is! Map) throw 'Unexpected response from server.';
+
+        final authToken = decoded['token'] as String?;
+        final memberJson = decoded['member'] as Map?;
+        final displayName = memberJson?['displayName'] as String?;
+        if (authToken == null || authToken.isEmpty) {
+          throw 'Device verification succeeded but token was missing.';
+        }
+
+        return _MemberVerifyMfaResponse(
+          token: authToken,
+          displayName: displayName,
+        );
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Device verification failed.';
   }
 
   Future<_MemberVerifyMfaResponse> verifyMfa({
@@ -1744,6 +2426,8 @@ class ProsaccoMemberAuthApi {
       request.headers
         ..set(HttpHeaders.contentTypeHeader, 'application/json')
         ..set('Accept', 'application/json');
+      final deviceHeaders = await _deviceHeaders();
+      deviceHeaders.forEach(request.headers.set);
 
       if (token != null && token.isNotEmpty) {
         request.headers.set('Authorization', 'Bearer $token');
@@ -1777,6 +2461,8 @@ class ProsaccoMemberAuthApi {
       request.headers
         ..set(HttpHeaders.acceptHeader, 'application/json')
         ..set('Authorization', 'Bearer $token');
+      final deviceHeaders = await _deviceHeaders();
+      deviceHeaders.forEach(request.headers.set);
 
       final response = await request.close().timeout(const Duration(seconds: 40));
       final responseText =
@@ -1819,6 +2505,8 @@ class ProsaccoMemberAuthApi {
         ..set(HttpHeaders.contentTypeHeader, 'application/json')
         ..set('Accept', 'application/json')
         ..set('Authorization', 'Bearer $token');
+      final deviceHeaders = await _deviceHeaders();
+      deviceHeaders.forEach(request.headers.set);
       request.add(utf8.encode(jsonBody));
 
       final response = await request.close().timeout(const Duration(seconds: 20));
@@ -1842,6 +2530,8 @@ class ProsaccoMemberAuthApi {
       request.headers
         ..set(HttpHeaders.acceptHeader, 'application/json')
         ..set('Authorization', 'Bearer $token');
+      final deviceHeaders = await _deviceHeaders();
+      deviceHeaders.forEach(request.headers.set);
 
       final response = await request.close().timeout(const Duration(seconds: 20));
       final responseText =
@@ -2038,6 +2728,7 @@ class ProsaccoMemberAuthApi {
     required int requestedAmountCents,
     required int repaymentMonths,
     required String disbursementMethod,
+    Map<String, dynamic>? disbursementDestination,
     String? purpose,
     List<LoanGuarantorInput>? guarantors,
   }) async {
@@ -2046,6 +2737,7 @@ class ProsaccoMemberAuthApi {
       'requestedAmountCents': requestedAmountCents,
       'repaymentMonths': repaymentMonths,
       'disbursementMethod': disbursementMethod,
+      if (disbursementDestination != null) 'disbursementDestination': disbursementDestination,
       if (purpose != null) 'purpose': purpose,
       if (guarantors != null && guarantors.isNotEmpty)
         'guarantors': guarantors.map((g) => g.toJson()).toList(),
@@ -2205,12 +2897,16 @@ class _MemberLoginResponse {
   _MemberLoginResponse({
     required this.token,
     required this.needsMfa,
+    required this.needsDeviceBinding,
+    required this.deviceBindingChallengeId,
     required this.mfaMethod,
     required this.displayName,
   });
 
   final String? token;
   final bool needsMfa;
+  final bool needsDeviceBinding;
+  final String? deviceBindingChallengeId;
   final String? mfaMethod;
   final String? displayName;
 }
@@ -2227,6 +2923,221 @@ class _HttpResponse {
 
   final int statusCode;
   final String bodyText;
+}
+
+class MemberSecurityOtpRequiredException implements Exception {
+  MemberSecurityOtpRequiredException({
+    required this.purpose,
+    required this.amountCents,
+    required this.message,
+  });
+
+  final String purpose;
+  final int amountCents;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class MemberTransactionOtpChallenge {
+  MemberTransactionOtpChallenge({
+    required this.challengeId,
+    this.sentTo,
+    this.channel,
+  });
+
+  final String challengeId;
+  final String? sentTo;
+  final String? channel;
+}
+
+class MemberUtilityCatalog {
+  MemberUtilityCatalog({
+    required this.enabled,
+    required this.provider,
+    required this.providerMode,
+    required this.displayName,
+    required this.categories,
+    required this.billers,
+    required this.networks,
+    required this.paymentSources,
+    required this.mpesaEnabled,
+  });
+
+  final bool enabled;
+  final String provider;
+  final String providerMode;
+  final String displayName;
+  final List<MemberUtilityCategory> categories;
+  final List<MemberUtilityBiller> billers;
+  final List<MemberUtilityNetwork> networks;
+  final List<String> paymentSources;
+  final bool mpesaEnabled;
+
+  factory MemberUtilityCatalog.fromJson(Map<String, dynamic> json) {
+    List<T> parseList<T>(dynamic raw, T Function(Map<String, dynamic>) parse) {
+      if (raw is! List) return <T>[];
+      return raw.whereType<Map>().map((e) => parse(e.cast<String, dynamic>())).toList();
+    }
+
+    return MemberUtilityCatalog(
+      enabled: json['enabled'] == true,
+      provider: json['provider']?.toString() ?? 'MANUAL',
+      providerMode: json['providerMode']?.toString() ?? 'FRAMEWORK_ONLY',
+      displayName: json['displayName']?.toString() ?? 'SACCO payment provider',
+      categories: parseList(json['categories'], MemberUtilityCategory.fromJson),
+      billers: parseList(json['billers'], MemberUtilityBiller.fromJson),
+      networks: parseList(json['networks'], MemberUtilityNetwork.fromJson),
+      paymentSources: (json['paymentSources'] is List)
+          ? (json['paymentSources'] as List).map((e) => e.toString()).toList()
+          : const ['FOSA'],
+      mpesaEnabled: json['mpesaEnabled'] == true,
+    );
+  }
+}
+
+class MemberUtilityCategory {
+  MemberUtilityCategory({
+    required this.code,
+    required this.label,
+    required this.icon,
+    required this.providerHint,
+    required this.billerCount,
+  });
+
+  final String code;
+  final String label;
+  final String icon;
+  final String providerHint;
+  final int billerCount;
+
+  factory MemberUtilityCategory.fromJson(Map<String, dynamic> json) {
+    return MemberUtilityCategory(
+      code: json['code']?.toString() ?? '',
+      label: json['label']?.toString() ?? '',
+      icon: json['icon']?.toString() ?? '',
+      providerHint: json['providerHint']?.toString() ?? '',
+      billerCount: json['billerCount'] is num ? (json['billerCount'] as num).toInt() : 0,
+    );
+  }
+}
+
+class MemberUtilityBiller {
+  MemberUtilityBiller({
+    required this.code,
+    required this.name,
+    required this.category,
+    this.logoUrl,
+    this.minAmountCents = 0,
+  });
+
+  final String code;
+  final String name;
+  final String category;
+  final String? logoUrl;
+  final int minAmountCents;
+
+  factory MemberUtilityBiller.fromJson(Map<String, dynamic> json) {
+    int toInt(dynamic value) => value is num ? value.toInt() : int.tryParse(value?.toString() ?? '') ?? 0;
+    return MemberUtilityBiller(
+      code: json['code']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      category: json['category']?.toString() ?? '',
+      logoUrl: json['logoUrl']?.toString(),
+      minAmountCents: toInt(json['minAmountCents']),
+    );
+  }
+}
+
+class MemberUtilityNetwork {
+  MemberUtilityNetwork({
+    required this.code,
+    required this.name,
+    this.logoUrl,
+    this.bundles = const [],
+  });
+
+  final String code;
+  final String name;
+  final String? logoUrl;
+  final List<MemberDataBundle> bundles;
+
+  factory MemberUtilityNetwork.fromJson(Map<String, dynamic> json) {
+    final bundlesRaw = json['bundles'];
+    return MemberUtilityNetwork(
+      code: json['code']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      logoUrl: json['logoUrl']?.toString(),
+      bundles: bundlesRaw is List
+          ? bundlesRaw.whereType<Map>().map((e) => MemberDataBundle.fromJson(e.cast<String, dynamic>())).toList()
+          : const [],
+    );
+  }
+}
+
+class MemberDataBundle {
+  MemberDataBundle({
+    required this.code,
+    required this.name,
+    required this.amountCents,
+    this.validity,
+  });
+
+  final String code;
+  final String name;
+  final int amountCents;
+  final String? validity;
+
+  factory MemberDataBundle.fromJson(Map<String, dynamic> json) {
+    int toInt(dynamic value) => value is num ? value.toInt() : int.tryParse(value?.toString() ?? '') ?? 0;
+    return MemberDataBundle(
+      code: json['code']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      amountCents: toInt(json['amountCents']),
+      validity: json['validity']?.toString(),
+    );
+  }
+}
+
+class MemberUtilityValidation {
+  MemberUtilityValidation({
+    required this.message,
+    this.customerName,
+  });
+
+  final String message;
+  final String? customerName;
+
+  factory MemberUtilityValidation.fromJson(Map<String, dynamic> json) {
+    return MemberUtilityValidation(
+      message: json['message']?.toString() ?? 'Reference accepted.',
+      customerName: json['customerName']?.toString(),
+    );
+  }
+}
+
+class MemberUtilityRequestResult {
+  MemberUtilityRequestResult({
+    required this.status,
+    required this.transactionRef,
+    required this.message,
+    this.requestId,
+  });
+
+  final String status;
+  final String transactionRef;
+  final String message;
+  final String? requestId;
+
+  factory MemberUtilityRequestResult.fromJson(Map<String, dynamic> json) {
+    return MemberUtilityRequestResult(
+      status: json['status']?.toString() ?? 'PENDING_PROVIDER',
+      transactionRef: json['transactionRef']?.toString() ?? '',
+      message: json['message']?.toString() ?? 'Payment request recorded.',
+      requestId: json['requestId']?.toString(),
+    );
+  }
 }
 
 class MemberProfileData {
@@ -2261,6 +3172,29 @@ class MemberSecurityData {
   final String? mfaMethod;
 }
 
+class MemberMfaSetupResult {
+  MemberMfaSetupResult({
+    required this.method,
+    this.secret,
+    this.manualEntry,
+    this.otpauthUrl,
+  });
+
+  final String method;
+  final String? secret;
+  final String? manualEntry;
+  final String? otpauthUrl;
+
+  factory MemberMfaSetupResult.fromJson(Map<String, dynamic> json) {
+    return MemberMfaSetupResult(
+      method: json['method']?.toString() ?? 'sms',
+      secret: json['secret']?.toString(),
+      manualEntry: json['manualEntry']?.toString(),
+      otpauthUrl: json['otpauthUrl']?.toString(),
+    );
+  }
+}
+
 class MemberDeviceData {
   MemberDeviceData({
     required this.id,
@@ -2283,16 +3217,74 @@ class MemberBeneficiaryData {
   MemberBeneficiaryData({
     required this.id,
     required this.name,
+    required this.fullName,
     required this.relationship,
     required this.share,
     required this.nationalId,
+    required this.phone,
+    required this.email,
+    required this.physicalAddress,
+    required this.dateOfBirth,
+    required this.nominationPercent,
+    required this.isSecondary,
   });
 
   final String id;
   final String name;
+  final String fullName;
   final String relationship;
   final String share;
   final String nationalId;
+  final String phone;
+  final String email;
+  final String physicalAddress;
+  final String? dateOfBirth;
+  final int? nominationPercent;
+  final bool isSecondary;
+}
+
+class MemberTransferBeneficiaryData {
+  MemberTransferBeneficiaryData({
+    required this.id,
+    required this.type,
+    required this.nickname,
+    this.recipientMemberNumber,
+    this.recipientName,
+    this.phone,
+    this.bankName,
+    this.bankAccountNumber,
+    this.bankAccountName,
+    this.mobileNetwork,
+    required this.isFavorite,
+  });
+
+  final String id;
+  final String type;
+  final String nickname;
+  final String? recipientMemberNumber;
+  final String? recipientName;
+  final String? phone;
+  final String? bankName;
+  final String? bankAccountNumber;
+  final String? bankAccountName;
+  final String? mobileNetwork;
+  final bool isFavorite;
+
+  factory MemberTransferBeneficiaryData.fromJson(Map json) {
+    return MemberTransferBeneficiaryData(
+      id: json['id']?.toString() ?? '',
+      type: json['type']?.toString() ?? 'INTERNAL_MEMBER',
+      nickname: json['nickname']?.toString() ?? '',
+      recipientMemberNumber: json['recipientMemberNumber']?.toString(),
+      recipientName: json['recipientName']?.toString(),
+      phone: json['phone']?.toString(),
+      bankName: json['bankName']?.toString(),
+      bankAccountNumber: json['bankAccountNumber']?.toString(),
+      bankAccountName: json['bankAccountName']?.toString(),
+      mobileNetwork: json['mobileNetwork']?.toString(),
+      isFavorite: json['isFavorite'] == true,
+    );
+  }
 }
 
 class MemberKycDocumentData {
@@ -3046,6 +4038,9 @@ class LoanProductData {
     this.description,
     this.minGuarantors,
     this.maxGuarantors,
+    this.guarantorSavingsLockPercent,
+    this.maxGuaranteePerGuarantorPercent,
+    this.qualifyingSavingsBasis,
   });
 
   final String id;
@@ -3064,6 +4059,9 @@ class LoanProductData {
   final String? description;
   final int? minGuarantors;
   final int? maxGuarantors;
+  final double? guarantorSavingsLockPercent;
+  final double? maxGuaranteePerGuarantorPercent;
+  final String? qualifyingSavingsBasis;
 
   static int _i(dynamic v) => v is num ? v.toInt() : int.tryParse(v?.toString() ?? '') ?? 0;
   static double _d(dynamic v) => v is num ? v.toDouble() : double.tryParse(v?.toString() ?? '') ?? 0.0;
@@ -3086,6 +4084,9 @@ class LoanProductData {
       description: json['description']?.toString(),
       minGuarantors: json['minGuarantors'] != null ? _i(json['minGuarantors']) : null,
       maxGuarantors: json['maxGuarantors'] != null ? _i(json['maxGuarantors']) : null,
+      guarantorSavingsLockPercent: json['guarantorSavingsLockPercent'] != null ? _d(json['guarantorSavingsLockPercent']) : null,
+      maxGuaranteePerGuarantorPercent: json['maxGuaranteePerGuarantorPercent'] != null ? _d(json['maxGuaranteePerGuarantorPercent']) : null,
+      qualifyingSavingsBasis: json['qualifyingSavingsBasis']?.toString(),
     );
   }
 }
@@ -3191,15 +4192,18 @@ class LoanGuarantorInput {
     required this.guarantorMemberId,
     required this.coverageCents,
     required this.requiredLockCents,
+    this.requiredShareLockShares = 0,
   });
 
   final String guarantorMemberId;
   final int coverageCents;
   final int requiredLockCents;
+  final int requiredShareLockShares;
 
   Map<String, dynamic> toJson() => {
     'guarantorMemberId': guarantorMemberId,
     'coverageCents': coverageCents,
+    // Backend recalculates final BOSA/share lock from the loan product.
     'requiredLockCents': requiredLockCents,
   };
 }
@@ -3213,6 +4217,7 @@ class GuarantorInboxItem {
     required this.requestedAmountCents,
     required this.coverageCents,
     required this.requiredLockCents,
+    required this.requiredShareLockShares,
     required this.requestedAt,
     this.expiresAt,
   });
@@ -3224,6 +4229,7 @@ class GuarantorInboxItem {
   final int requestedAmountCents;
   final int coverageCents;
   final int requiredLockCents;
+  final int requiredShareLockShares;
   final String requestedAt;
   final String? expiresAt;
 
@@ -3259,6 +4265,7 @@ class GuarantorInboxItem {
       requestedAmountCents: _i(app?['requestedAmountCents'] ?? 0),
       coverageCents: _i(json['coverageCents'] ?? 0),
       requiredLockCents: _i(json['requiredLockCents'] ?? 0),
+      requiredShareLockShares: _i(json['requiredShareLockShares'] ?? 0),
       requestedAt: json['requestedAt']?.toString() ?? '',
       expiresAt: json['expiresAt']?.toString(),
     );

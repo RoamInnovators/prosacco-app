@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../theme/prosacco_palette.dart';
 import '../../utils/prosacco_member_auth_api.dart';
+import '../../widgets/member_security_otp_dialog.dart';
 import '../../widgets/prosacco_animated_loader.dart';
 import 'account_flow_widgets.dart';
 import 'account_models.dart';
@@ -99,11 +100,29 @@ class _TransferMemberScreenState extends State<TransferMemberScreen> {
     setState(() => _submitting = true);
     try {
       final api = ProsaccoMemberAuthApi();
-      await api.sendToMemberFosa(
-        token: widget.authToken,
-        recipientMemberId: recipientMemberId,
-        amountCents: amountCents,
-      );
+      try {
+        await api.sendToMemberFosa(
+          token: widget.authToken,
+          recipientMemberId: recipientMemberId,
+          amountCents: amountCents,
+        );
+      } on MemberSecurityOtpRequiredException catch (e) {
+        final challenge = await api.requestTransactionOtp(
+          token: widget.authToken,
+          purpose: e.purpose,
+          amountCents: e.amountCents,
+        );
+        if (!mounted) return;
+        final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
+        if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
+        await api.sendToMemberFosa(
+          token: widget.authToken,
+          recipientMemberId: recipientMemberId,
+          amountCents: amountCents,
+          securityOtpChallengeId: challenge.challengeId,
+          securityOtpCode: code,
+        );
+      }
 
       if (!mounted) return;
       await showFlowSuccessSheet(

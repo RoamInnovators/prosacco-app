@@ -77,10 +77,37 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
     }
   }
 
-  Future<void> _pickAndUploadAvatar() async {
+  Future<void> _chooseAvatarSourceAndUpload() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_rounded),
+              title: const Text('Choose from gallery'),
+              subtitle: const Text('Allow gallery access to select a profile photo.'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_rounded),
+              title: const Text('Take a selfie'),
+              subtitle: const Text('Allow camera access to capture a live photo.'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+    await _pickAndUploadAvatar(source);
+  }
+
+  Future<void> _pickAndUploadAvatar(ImageSource source) async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(
-      source: ImageSource.gallery,
+      source: source,
       maxWidth: 800,
       maxHeight: 800,
       imageQuality: 85,
@@ -278,7 +305,7 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
                     shape: const CircleBorder(),
                     elevation: 4,
                     child: InkWell(
-                      onTap: _uploadingAvatar ? null : _pickAndUploadAvatar,
+                      onTap: _uploadingAvatar ? null : _chooseAvatarSourceAndUpload,
                       customBorder: const CircleBorder(),
                       child: Padding(
                         padding: const EdgeInsets.all(8),
@@ -406,7 +433,7 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
               onTap: () => Navigator.push<void>(
                 context,
                 MaterialPageRoute<void>(
-                  builder: (_) => const ProfileMfaScreen(),
+                  builder: (_) => ProfileMfaScreen(authToken: widget.authToken),
                 ),
               ),
             ),

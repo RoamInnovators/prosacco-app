@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../theme/prosacco_palette.dart';
 import '../../utils/prosacco_member_auth_api.dart';
+import '../../widgets/member_security_otp_dialog.dart';
 import '../../widgets/prosacco_animated_loader.dart';
 import 'account_flow_widgets.dart';
 import 'account_models.dart';
@@ -153,6 +154,45 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
     }
   }
 
+  Future<void> _withdrawWithOtp({
+    required int amountCents,
+    required String channel,
+    String? phoneNumber,
+    String? bankName,
+    String? bankAccountNumber,
+  }) async {
+    final api = ProsaccoMemberAuthApi();
+    try {
+      await api.withdrawFosa(
+        token: widget.authToken,
+        amountCents: amountCents,
+        channel: channel,
+        phoneNumber: phoneNumber,
+        bankName: bankName,
+        bankAccountNumber: bankAccountNumber,
+      );
+    } on MemberSecurityOtpRequiredException catch (e) {
+      final challenge = await api.requestTransactionOtp(
+        token: widget.authToken,
+        purpose: e.purpose,
+        amountCents: e.amountCents,
+      );
+      if (!mounted) return;
+      final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
+      if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
+      await api.withdrawFosa(
+        token: widget.authToken,
+        amountCents: amountCents,
+        channel: channel,
+        phoneNumber: phoneNumber,
+        bankName: bankName,
+        bankAccountNumber: bankAccountNumber,
+        securityOtpChallengeId: challenge.challengeId,
+        securityOtpCode: code,
+      );
+    }
+  }
+
   Future<void> _maybeConfirm() async {
     final amt = _amountVal;
     final amountCents = _amountCentsVal;
@@ -210,9 +250,7 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
                                     ? 'BANK_TRANSFER'
                                     : 'MPESA';
 
-                            final api = ProsaccoMemberAuthApi();
-                            await api.withdrawFosa(
-                              token: widget.authToken,
+                            await _withdrawWithOtp(
                               amountCents: amountCents,
                               channel: backendChannel,
                               phoneNumber: backendChannel == 'MPESA'

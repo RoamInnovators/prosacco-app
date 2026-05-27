@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/prosacco_palette.dart';
+import '../utils/balance_visibility.dart';
 import '../utils/prosacco_member_auth_api.dart';
 import '../widgets/prosacco_animated_loader.dart';
 import 'home_all_transactions_screen.dart';
@@ -10,8 +11,7 @@ import 'member_notifications_screen.dart';
 import 'profile/member_profile_shell.dart';
 import 'statements/member_statements_shell.dart';
 
-/// Member dashboard — `prosacco design/home_dashboard/code.html`.
-/// Sample figures until `GET /member/me/summary` and recent-transactions are wired.
+/// Member dashboard — balances and activity from member APIs.
 class MemberHomeScreen extends StatefulWidget {
   const MemberHomeScreen({
     super.key,
@@ -32,7 +32,6 @@ class _MemberHomeScreenState extends State<MemberHomeScreen>
     with TickerProviderStateMixin {
   int _navIndex = 0;
   late final TabController _loansTabController;
-  bool _showBalance = false;
   bool _loadingHome = true;
 
   int _bosaBalanceCents = 0;
@@ -93,7 +92,6 @@ class _MemberHomeScreenState extends State<MemberHomeScreen>
         _loadingHome = false;
       });
     } catch (_) {
-      // Keep sample defaults visible if API fails.
       if (!mounted) return;
       setState(() => _loadingHome = false);
     }
@@ -309,9 +307,6 @@ class _MemberHomeScreenState extends State<MemberHomeScreen>
                 children: [
                   _BalanceHero(
                     fosaBalanceCents: _loadingHome ? 0 : _fosaBalanceCents,
-                    showBalance: _showBalance,
-                    onToggleBalance: () =>
-                        setState(() => _showBalance = !_showBalance),
                     onDeposit: () => setState(() => _navIndex = 1),
                     onTransfer: () => setState(() => _navIndex = 1),
                     onWithdraw: () => setState(() => _navIndex = 1),
@@ -403,13 +398,6 @@ class _MemberHomeScreenState extends State<MemberHomeScreen>
     );
   }
 }
-
-// ——— Sample aggregates (replace with `/member/me/summary`) ———
-const double _kSamplePortfolio = 4820150.00;
-const double _kSampleBosa = 1200000;
-const double _kSampleLoans = 450000;
-const double _kSampleShares = 300000;
-const double _kSampleFosa = 2800000;
 
 String _formatThousands(double n) {
   final parts = n.toStringAsFixed(2).split('.');
@@ -581,26 +569,22 @@ class _TopBar extends StatelessWidget {
 class _BalanceHero extends StatelessWidget {
   const _BalanceHero({
     required this.fosaBalanceCents,
-    required this.showBalance,
-    required this.onToggleBalance,
     required this.onDeposit,
     required this.onTransfer,
     required this.onWithdraw,
   });
 
   final int fosaBalanceCents;
-  final bool showBalance;
-  final VoidCallback onToggleBalance;
-
   final VoidCallback onDeposit;
   final VoidCallback onTransfer;
   final VoidCallback onWithdraw;
 
   @override
   Widget build(BuildContext context) {
+    final visibility = BalanceVisibilityScope.of(context);
     final fosaKes = fosaBalanceCents / 100.0;
     final balanceText =
-        showBalance ? _formatThousands(fosaKes) : '••••••••';
+        visibility.formatAmount(_formatThousands(fosaKes), hidden: '••••••••');
     return ClipRRect(
       borderRadius: BorderRadius.circular(32),
       child: Stack(
@@ -716,10 +700,10 @@ class _BalanceHero extends StatelessWidget {
                       ),
                     ),
                     IconButton(
-                      onPressed: onToggleBalance,
+                      onPressed: visibility.toggle,
                       padding: EdgeInsets.zero,
                       icon: Icon(
-                        showBalance
+                        visibility.visible
                             ? Icons.visibility_outlined
                             : Icons.visibility_off_outlined,
                         color: Colors.white.withValues(alpha: 0.9),
@@ -816,6 +800,8 @@ class _BentoGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibility = BalanceVisibilityScope.of(context);
+    final masked = visibility.formatAmount('', hidden: '••••');
     return Column(
       children: [
         Row(
@@ -826,7 +812,7 @@ class _BentoGrid extends StatelessWidget {
                 iconBg: const Color(0xFFD1FAE5),
                 iconFg: context.pal.primary,
                 label: 'BOSA Savings',
-                value: bosa,
+                value: visibility.visible ? bosa : masked,
               ),
             ),
             const SizedBox(width: 16),
@@ -836,7 +822,7 @@ class _BentoGrid extends StatelessWidget {
                 iconBg: const Color(0xFFFEF3C7),
                 iconFg: const Color(0xFFB45309),
                 label: 'Active Loans',
-                value: loans,
+                value: visibility.visible ? loans : masked,
               ),
             ),
           ],
@@ -850,7 +836,7 @@ class _BentoGrid extends StatelessWidget {
                 iconBg: const Color(0xFFDBEAFE),
                 iconFg: const Color(0xFF1D4ED8),
                 label: 'Share Capital',
-                value: shares,
+                value: visibility.visible ? shares : masked,
               ),
             ),
             const SizedBox(width: 16),
@@ -860,7 +846,7 @@ class _BentoGrid extends StatelessWidget {
                 iconBg: const Color(0xFFEDE9FE),
                 iconFg: const Color(0xFF6D28D9),
                 label: 'FOSA Balance',
-                value: fosa,
+                value: visibility.visible ? fosa : masked,
               ),
             ),
           ],

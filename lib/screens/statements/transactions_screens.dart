@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../theme/prosacco_palette.dart';
+import '../../utils/balance_visibility.dart';
 import '../../utils/prosacco_member_auth_api.dart';
 import '../../widgets/prosacco_animated_loader.dart';
 import 'statement_models.dart';
@@ -133,6 +134,19 @@ class _TxnCard extends StatelessWidget {
     final isCredit = txn.isCredit;
     final amtColor = isCredit ? p.success : p.onSurface;
     final prefix = isCredit ? '+' : '−';
+    final visibility = BalanceVisibilityScope.maybeOf(context);
+    final amountLabel = visibility?.formatAmount(
+          '$prefix KES ${formatKesMoney(txn.amountKes)}',
+          hidden: '••••',
+        ) ??
+        '$prefix KES ${formatKesMoney(txn.amountKes)}';
+    final balanceLabel = txn.balanceAfterKes == null
+        ? null
+        : (visibility?.formatAmount(
+              'Bal: ${formatKesMoney(txn.balanceAfterKes!)}',
+              hidden: 'Bal: ••••',
+            ) ??
+            'Bal: ${formatKesMoney(txn.balanceAfterKes!)}');
 
     return Container(
       decoration: BoxDecoration(
@@ -192,12 +206,12 @@ class _TxnCard extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text('$prefix KES ${formatKesMoney(txn.amountKes)}',
+              Text(amountLabel,
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w900, color: amtColor)),
-              if (txn.balanceAfterKes != null) ...[
+              if (balanceLabel != null) ...[
                 const SizedBox(height: 2),
-                Text('Bal: ${formatKesMoney(txn.balanceAfterKes!)}',
+                Text(balanceLabel,
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: p.slateMuted, fontSize: 11)),
               ],

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/prosacco_palette.dart';
+import '../utils/prosacco_member_auth_api.dart';
 import '../widgets/prosacco_auth_backdrop.dart';
 import '../widgets/prosacco_trust_footer.dart';
 
@@ -15,18 +16,25 @@ class MemberResetPasswordScreen extends StatefulWidget {
 
 class _MemberResetPasswordScreenState extends State<MemberResetPasswordScreen> {
   final _identifierController = TextEditingController();
+  final _otpController = TextEditingController();
+  final _passwordController = TextEditingController();
   final _focus = FocusNode();
+  String? _challengeId;
+  String? _sentTo;
+  bool _busy = false;
 
   static const double _maxFormWidth = 448;
 
   @override
   void dispose() {
     _identifierController.dispose();
+    _otpController.dispose();
+    _passwordController.dispose();
     _focus.dispose();
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final id = _identifierController.text.trim();
     if (id.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -36,13 +44,45 @@ class _MemberResetPasswordScreenState extends State<MemberResetPasswordScreen> {
       );
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'When member password reset is available, you will receive instructions by email or SMS.',
-        ),
-      ),
-    );
+    setState(() => _busy = true);
+    try {
+      final api = ProsaccoMemberAuthApi();
+      if (_challengeId == null) {
+        final challenge = await api.requestPasswordReset(login: id);
+        if (!mounted) return;
+        setState(() {
+          _challengeId = challenge.challengeId;
+          _sentTo = challenge.sentTo;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Reset code sent${_sentTo == null ? '' : ' to $_sentTo'}.'),),
+        );
+        return;
+      }
+
+      final password = _passwordController.text.trim();
+      if (_otpController.text.trim().length != 6 || password.length < 8) {
+        throw 'Enter the 6-digit OTP and a password of at least 8 characters.';
+      }
+      await api.resetPassword(
+        login: id,
+        challengeId: _challengeId!,
+        code: _otpController.text.trim(),
+        password: password,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password reset successfully. Please sign in.')),
+      );
+      Navigator.maybePop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e?.toString() ?? 'Password reset failed.')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -230,10 +270,46 @@ class _MemberResetPasswordScreenState extends State<MemberResetPasswordScreen> {
             ),
           ),
           const SizedBox(height: 20),
+          if (_challengeId != null) ...[
+            _fieldLabel('OTP code'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _otpController,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              decoration: InputDecoration(
+                counterText: '',
+                hintText: '6-digit code',
+                filled: true,
+                fillColor: context.pal.surfaceContainerLow,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _fieldLabel('New password'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _passwordController,
+              obscureText: true,
+              decoration: InputDecoration(
+                hintText: 'At least 8 characters',
+                filled: true,
+                fillColor: context.pal.surfaceContainerLow,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
           _infoHint(),
           const SizedBox(height: 24),
           FilledButton(
-            onPressed: _submit,
+            onPressed: _busy ? null : _submit,
             style: FilledButton.styleFrom(
               backgroundColor: context.pal.primary,
               foregroundColor: Colors.white,
@@ -244,11 +320,17 @@ class _MemberResetPasswordScreenState extends State<MemberResetPasswordScreen> {
               elevation: 4,
               shadowColor: context.pal.primary.withValues(alpha: 0.2),
             ),
-            child: Row(
+            child: _busy
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  'Send reset instructions',
+                  _challengeId == null ? 'Send reset code' : 'Reset password',
                   style: textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                     color: Colors.white,

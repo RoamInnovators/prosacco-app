@@ -287,6 +287,9 @@ class _GuarantorRequestDetailScreenState
           const SizedBox(height: 10),
           _detailCell(context, 'BOSA lock required', 'KES ${_money(item.requiredLockCents)}',
               fullWidth: true),
+          const SizedBox(height: 10),
+          _detailCell(context, 'Share lock required', '${item.requiredShareLockShares} share(s)',
+              fullWidth: true),
           const SizedBox(height: 16),
 
           // Expiry

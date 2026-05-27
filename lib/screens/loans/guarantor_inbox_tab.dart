@@ -221,7 +221,7 @@ class _InboxCard extends StatelessWidget {
                   Expanded(child: _miniCell(context, 'Product', item.productName)),
                   const SizedBox(width: 12),
                   Expanded(child: _miniCell(context, 'Your lock',
-                      'KES ${_money(item.requiredLockCents)}')),
+                      'KES ${_money(item.requiredLockCents)} + ${item.requiredShareLockShares} shares')),
                 ],
               ),
               const SizedBox(height: 16),

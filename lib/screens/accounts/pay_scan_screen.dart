@@ -55,14 +55,14 @@ class _PayScanScreenState extends State<PayScanScreen> {
               Navigator.pop(ctx);
               Navigator.pop(context);
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
+                const SnackBar(
                   content: Text(
-                    'Payment flow for this QR will open when checkout is wired.',
+                    'QR payments are not enabled on your member portal yet.',
                   ),
                 ),
               );
             },
-            child: const Text('Continue'),
+            child: const Text('OK'),
           ),
         ],
       ),

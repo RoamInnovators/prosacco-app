@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../theme/prosacco_palette.dart';
+import '../utils/account_card_palette.dart';
+import '../utils/balance_visibility.dart';
 import '../utils/prosacco_member_auth_api.dart';
 import '../widgets/prosacco_animated_loader.dart';
 import 'accounts/buy_shares_screen.dart';
 import 'accounts/deposit_screen.dart';
+import 'accounts/payment_hub_screen.dart';
 import 'accounts/transfer_hub_screen.dart';
 import 'accounts/withdraw_screen.dart';
 
@@ -26,7 +29,6 @@ class MemberAccountsScreen extends StatefulWidget {
 class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
   late final PageController _pageController;
   int _pageIndex = 0;
-  late List<bool> _balanceHidden;
 
   List<_AccountSlide> _accountSlides = _kEmptyAccountSlides;
   bool _loading = true;
@@ -35,7 +37,6 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
   @override
   void initState() {
     super.initState();
-    _balanceHidden = List<bool>.filled(_accountSlides.length, true);
     _pageController = PageController(
       viewportFraction: 0.86,
       initialPage: 0,
@@ -96,7 +97,6 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
       if (!mounted) return;
       setState(() {
         _accountSlides = slides;
-        _balanceHidden = List<bool>.filled(_accountSlides.length, true);
         _pageIndex = 0;
         _loading = false;
         _loadError = null;
@@ -107,7 +107,6 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
         _loading = false;
         _loadError = e?.toString() ?? 'Failed to load accounts from server.';
         _accountSlides = _kEmptyAccountSlides;
-        _balanceHidden = List<bool>.filled(_accountSlides.length, true);
         _pageIndex = 0;
       });
     }
@@ -154,6 +153,7 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
 
   _AccountSlide _fallbackFdSlide() {
     return _AccountSlide(
+      accountType: 'FD',
       name: 'Fixed Deposit',
       accountMask: 'FD',
       balance: 0,
@@ -181,6 +181,7 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
         .toList();
 
     return _AccountSlide(
+      accountType: 'BOSA',
       name: name,
       accountMask: accountMask,
       balance: _kesFromCents(balanceCents),
@@ -213,6 +214,7 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
         .toList();
 
     return _AccountSlide(
+      accountType: 'FOSA',
       name: 'FOSA Account',
       accountMask: accountMask,
       balance: _kesFromCents(balanceCents),
@@ -258,6 +260,7 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
     }).toList();
 
     return _AccountSlide(
+      accountType: 'SHARES',
       name: 'Share Capital',
       accountMask: accountMask,
       balance: _kesFromCents(balanceCents),
@@ -275,6 +278,7 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
     final status = row.status?.toString();
 
     return _AccountSlide(
+      accountType: 'SS',
       name: productName,
       accountMask: _maskAccount('ACC', accountNumber),
       balance: balanceCents is num
@@ -294,6 +298,7 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
         ? '${d.termMonths} months'
         : 'Fixed Deposit';
     return _AccountSlide(
+      accountType: 'FD',
       name: d.productName,
       accountMask: accountMask,
       balance: _kesFromCents(balanceCents),
@@ -319,9 +324,19 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text(
-                'Could not load your accounts.\n$_loadError',
-                style: Theme.of(context).textTheme.bodyMedium,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Could not load your accounts.\n$_loadError',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: _loadAccounts,
+                    child: const Text('Retry'),
+                  ),
+                ],
               ),
             ),
           ),
@@ -358,10 +373,6 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   child: _AccountGreenCard(
                     slide: _accountSlides[i],
-                    balanceHidden: _balanceHidden[i],
-                    onToggleBalance: () => setState(() {
-                      _balanceHidden[i] = !_balanceHidden[i];
-                    }),
                   ),
                 );
               },
@@ -431,6 +442,7 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
       isShareCapital
           ? (Icons.bar_chart_rounded, 'Buy Shares')
           : (Icons.savings_outlined, 'Deposit'),
+      (Icons.receipt_long_rounded, 'Pay'),
       (Icons.payments_outlined, 'Withdraw'),
       (Icons.swap_horiz_rounded, 'Transfer'),
     ];
@@ -460,6 +472,8 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
                     open(DepositScreen(authToken: widget.authToken));
                   case 'Buy Shares':
                     open(BuySharesScreen(authToken: widget.authToken));
+                  case 'Pay':
+                    open(PaymentHubScreen(authToken: widget.authToken));
                   case 'Withdraw':
                     open(WithdrawScreen(authToken: widget.authToken));
                   case 'Transfer':
@@ -477,10 +491,9 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
   }
 }
 
-// ——— Models & sample data (replace with `/member/accounts/*`) ———
-
 class _AccountSlide {
   const _AccountSlide({
+    required this.accountType,
     required this.name,
     required this.accountMask,
     required this.balance,
@@ -488,6 +501,7 @@ class _AccountSlide {
     required this.transactions,
   });
 
+  final String accountType;
   final String name;
   final String accountMask;
   final double balance;
@@ -511,118 +525,6 @@ class _FlowTxn {
   final String footNote;
 }
 
-final List<_AccountSlide> _kFallbackAccountSlides = [
-  _AccountSlide(
-    name: 'BOSA Savings',
-    accountMask: 'ACC •••• 9110',
-    balance: 842500,
-    tagline: 'Primary savings',
-    transactions: [
-      _FlowTxn(
-        incoming: true,
-        title: 'Salary checkoff',
-        subtitle: 'Today • Credit',
-        amountLabel: '+ 18,400.00',
-        footNote: 'Completed',
-      ),
-      _FlowTxn(
-        incoming: false,
-        title: 'ATM withdrawal',
-        subtitle: 'Yesterday • Debit',
-        amountLabel: '- 5,000.00',
-        footNote: 'Agent',
-      ),
-      _FlowTxn(
-        incoming: true,
-        title: 'Dividend allocation',
-        subtitle: 'Mon • Credit',
-        amountLabel: '+ 12,500.00',
-        footNote: 'Posted',
-      ),
-      _FlowTxn(
-        incoming: false,
-        title: 'Standing order',
-        subtitle: 'Sun • Debit',
-        amountLabel: '- 3,200.00',
-        footNote: 'Auto',
-      ),
-    ],
-  ),
-  _AccountSlide(
-    name: 'FOSA Account',
-    accountMask: 'ACC •••• 3344',
-    balance: 42300,
-    tagline: 'Transactional',
-    transactions: [
-      _FlowTxn(
-        incoming: false,
-        title: 'M-Pesa send',
-        subtitle: 'Today • Debit',
-        amountLabel: '- 2,500.00',
-        footNote: 'PesaLink',
-      ),
-      _FlowTxn(
-        incoming: true,
-        title: 'Internal transfer in',
-        subtitle: 'Yesterday • Credit',
-        amountLabel: '+ 10,000.00',
-        footNote: 'From BOSA',
-      ),
-      _FlowTxn(
-        incoming: false,
-        title: 'POS purchase',
-        subtitle: 'Sat • Debit',
-        amountLabel: '- 1,180.00',
-        footNote: 'Retail',
-      ),
-    ],
-  ),
-  _AccountSlide(
-    name: 'Share Capital',
-    accountMask: 'Member shares',
-    balance: 520000,
-    tagline: '5,200 units',
-    transactions: [
-      _FlowTxn(
-        incoming: true,
-        title: 'Share purchase',
-        subtitle: 'Oct • Credit',
-        amountLabel: '+ 25,000.00',
-        footNote: 'Units',
-      ),
-      _FlowTxn(
-        incoming: false,
-        title: 'Transfer to savings',
-        subtitle: 'Sep • Debit',
-        amountLabel: '- 8,000.00',
-        footNote: 'Redeem',
-      ),
-    ],
-  ),
-  _AccountSlide(
-    name: 'Fixed Deposit',
-    accountMask: 'FD •••• 7781',
-    balance: 310000,
-    tagline: '12-month tenor',
-    transactions: [
-      _FlowTxn(
-        incoming: true,
-        title: 'Interest accrual',
-        subtitle: 'Month end • Credit',
-        amountLabel: '+ 4,120.00',
-        footNote: 'Accrued',
-      ),
-      _FlowTxn(
-        incoming: false,
-        title: 'Principal lock',
-        subtitle: 'Open • Debit',
-        amountLabel: '- 300,000.00',
-        footNote: 'Placement',
-      ),
-    ],
-  ),
-];
-
 const List<_AccountSlide> _kEmptyAccountSlides = <_AccountSlide>[];
 
 String _formatMoney2(double n) {
@@ -639,16 +541,14 @@ String _formatMoney2(double n) {
 class _AccountGreenCard extends StatelessWidget {
   const _AccountGreenCard({
     required this.slide,
-    required this.balanceHidden,
-    required this.onToggleBalance,
   });
 
   final _AccountSlide slide;
-  final bool balanceHidden;
-  final VoidCallback onToggleBalance;
 
   @override
   Widget build(BuildContext context) {
+    final visibility = BalanceVisibilityScope.of(context);
+    final palette = AccountCardPalette.forAccountType(slide.accountType);
     return ClipRRect(
       borderRadius: BorderRadius.circular(28),
       child: Stack(
@@ -660,8 +560,8 @@ class _AccountGreenCard extends StatelessWidget {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
-                  context.pal.primary,
-                  context.pal.primaryContainer,
+                  palette.start,
+                  palette.end,
                 ],
               ),
             ),
@@ -674,7 +574,7 @@ class _AccountGreenCard extends StatelessWidget {
               height: 140,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: context.pal.secondaryContainer.withValues(alpha: 0.18),
+                color: palette.accent.withValues(alpha: 0.22),
               ),
             ),
           ),
@@ -722,14 +622,14 @@ class _AccountGreenCard extends StatelessWidget {
                           color: Colors.white.withValues(alpha: 0.14),
                           borderRadius: BorderRadius.circular(12),
                           child: InkWell(
-                            onTap: onToggleBalance,
+                            onTap: visibility.toggle,
                             borderRadius: BorderRadius.circular(12),
                             child: Padding(
                               padding: const EdgeInsets.all(10),
                               child: Icon(
-                                balanceHidden
-                                    ? Icons.visibility_off_rounded
-                                    : Icons.visibility_rounded,
+                                visibility.visible
+                                    ? Icons.visibility_rounded
+                                    : Icons.visibility_off_rounded,
                                 color: Colors.white,
                                 size: 22,
                               ),
@@ -781,7 +681,10 @@ class _AccountGreenCard extends StatelessWidget {
                         fit: BoxFit.scaleDown,
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          balanceHidden ? '••••••' : _formatMoney2(slide.balance),
+                          visibility.formatAmount(
+                            _formatMoney2(slide.balance),
+                            hidden: '••••••',
+                          ),
                           style: Theme.of(context)
                               .textTheme
                               .headlineMedium
