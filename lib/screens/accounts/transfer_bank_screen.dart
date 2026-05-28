@@ -103,12 +103,35 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
       return;
     }
     final amountCents = (_amt! * 100).round();
+    final fee = await previewFlowFee(
+      context,
+      authToken: widget.authToken,
+      serviceType: 'FOSA_WITHDRAWAL',
+      amountCents: amountCents,
+      contextData: {'channel': 'BANK_TRANSFER'},
+    );
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm bank transfer',
+      rows: [
+        ('From', '${_source!.name} · ${_source!.mask}'),
+        ('Bank', _bank ?? 'Bank'),
+        ('Account', _accountNo.text.trim()),
+        ('Amount', 'KES ${formatKes(_amt!)}'),
+        ('Transfer fee', 'KES ${formatKes(fee.feeAmount / 100)}'),
+        ('Total debit', 'KES ${formatKes(fee.totalAmount / 100)}'),
+        if (_reason.text.trim().isNotEmpty) ('Reason', _reason.text.trim()),
+      ],
+      confirmLabel: 'Send to Bank',
+    );
+    if (!confirmed) return;
 
     setState(() => _submitting = true);
     try {
       final api = ProsaccoMemberAuthApi();
+      late MemberTransactionResult result;
       try {
-        await api.withdrawFosa(
+        result = await api.withdrawFosa(
           token: widget.authToken,
           amountCents: amountCents,
           channel: 'BANK_TRANSFER',
@@ -124,7 +147,7 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
         if (!mounted) return;
         final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
         if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
-        await api.withdrawFosa(
+        result = await api.withdrawFosa(
           token: widget.authToken,
           amountCents: amountCents,
           channel: 'BANK_TRANSFER',
@@ -136,10 +159,12 @@ class _TransferBankScreenState extends State<TransferBankScreen> {
       }
 
       if (!mounted) return;
-      await showFlowSuccessSheet(
+      await showTransactionReceiptSheet(
         context,
-        title: 'PesaLink transfer sent',
-        message:
+        authToken: widget.authToken,
+        transactionRef: result.transactionRef,
+        fallbackTitle: 'PesaLink transfer sent',
+        fallbackMessage:
             'KES ${formatKes(_amt!)} to $_bank · A/C ${_accountNo.text.trim()}. '
             '${_favorite ? "Recipient saved as favorite." : ""}',
       );

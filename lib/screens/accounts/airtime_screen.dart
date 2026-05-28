@@ -114,6 +114,19 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
       showFlowErrorSnack(context, 'Insufficient FOSA balance.');
       return;
     }
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm ${_purchaseType == 'DATA' ? 'data' : 'airtime'} purchase',
+      rows: [
+        ('Provider', network.name),
+        ('Recipient', _phone.text.trim()),
+        ('Amount', 'KES ${formatKes(amountCents / 100)}'),
+        ('Pay from', _source == 'FOSA' ? (_from?.name ?? 'FOSA') : 'M-Pesa'),
+      ],
+      confirmLabel: 'Submit Request',
+      icon: Icons.phone_android_rounded,
+    );
+    if (!confirmed) return;
     setState(() => _submitting = true);
     try {
       final result = await ProsaccoMemberAuthApi().submitUtilityPayment(
@@ -130,10 +143,12 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
         saveRecipient: false,
       );
       if (!mounted) return;
-      await showFlowSuccessSheet(
+      await showTransactionReceiptSheet(
         context,
-        title: 'Request recorded',
-        message: '${network.name} ${_purchaseType == 'DATA' ? 'data' : 'airtime'} request ref ${result.transactionRef} is ${result.status}. ${result.message}',
+        authToken: widget.authToken,
+        transactionRef: result.transactionRef,
+        fallbackTitle: 'Request recorded',
+        fallbackMessage: '${network.name} ${_purchaseType == 'DATA' ? 'data' : 'airtime'} request ref ${result.transactionRef} is ${result.status}. ${result.message}',
         icon: Icons.phone_android_rounded,
       );
     } catch (e) {

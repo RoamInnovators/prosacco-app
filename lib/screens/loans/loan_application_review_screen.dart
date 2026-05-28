@@ -196,7 +196,7 @@ class _LoanApplicationReviewScreenState
             FilledButton(
               onPressed: () {
                 Navigator.pop(ctx);
-                widget.onSubmitSuccess();
+                _doSubmit();
               },
               style: FilledButton.styleFrom(
                 backgroundColor: context.pal.primary,

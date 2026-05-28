@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:local_auth/local_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../theme/prosacco_palette.dart';
 import '../../utils/prosacco_member_auth_api.dart';
@@ -34,9 +36,15 @@ class ProfileSecurityScreen extends StatefulWidget {
 }
 
 class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
+  static const String _spBiometricLoginEnabledKey =
+      'prosacco_biometric_login_enabled';
+
   bool _loggingOut = false;
   bool _loading = true;
   bool _uploadingAvatar = false;
+  bool _biometricAvailable = false;
+  bool _biometricLoginEnabled = true;
+  bool _biometricUpdating = false;
   String? _loadError;
   MemberProfileData? _profile;
   MemberSecurityData? _security;
@@ -60,12 +68,15 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
         api.fetchMemberSecurity(token: widget.authToken),
         api.fetchMemberDevices(token: widget.authToken),
       ]);
+      final biometricPreference = await _readBiometricPreference();
       if (!mounted) return;
       final devices = results[2] as List<MemberDeviceData>;
       setState(() {
         _profile = results[0] as MemberProfileData;
         _security = results[1] as MemberSecurityData;
         _deviceCount = devices.length;
+        _biometricAvailable = biometricPreference[0];
+        _biometricLoginEnabled = biometricPreference[1];
         _loading = false;
       });
     } catch (e) {
@@ -74,6 +85,68 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
         _loadError = e?.toString() ?? 'Failed to load profile.';
         _loading = false;
       });
+    }
+  }
+
+  Future<List<bool>> _readBiometricPreference() async {
+    final sp = await SharedPreferences.getInstance();
+    final auth = LocalAuthentication();
+    var available = false;
+    try {
+      available = await auth.isDeviceSupported() && await auth.canCheckBiometrics;
+    } catch (_) {
+      available = false;
+    }
+    return <bool>[
+      available,
+      sp.getBool(_spBiometricLoginEnabledKey) ?? true,
+    ];
+  }
+
+  Future<void> _setBiometricLoginEnabled(bool enabled) async {
+    if (_biometricUpdating) return;
+    setState(() => _biometricUpdating = true);
+    try {
+      if (enabled) {
+        final auth = LocalAuthentication();
+        final available =
+            await auth.isDeviceSupported() && await auth.canCheckBiometrics;
+        if (!available) {
+          throw 'Biometric authentication is not available on this device.';
+        }
+        final verified = await auth.authenticate(
+          localizedReason: 'Confirm biometrics to enable biometric login.',
+          options: const AuthenticationOptions(
+            biometricOnly: false,
+            stickyAuth: true,
+          ),
+        );
+        if (!verified) throw 'Biometric verification was cancelled.';
+      }
+
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool(_spBiometricLoginEnabledKey, enabled);
+      if (!mounted) return;
+      setState(() {
+        _biometricAvailable = _biometricAvailable || enabled;
+        _biometricLoginEnabled = enabled;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            enabled
+                ? 'Biometric login enabled.'
+                : 'Biometric login disabled. You can still sign in with your password.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString())),
+      );
+    } finally {
+      if (mounted) setState(() => _biometricUpdating = false);
     }
   }
 
@@ -123,7 +196,7 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
           : 'image/jpeg';
 
       final api = ProsaccoMemberAuthApi();
-      final avatarUrl = await api.uploadMemberAvatar(
+      await api.uploadMemberAvatar(
         token: widget.authToken,
         imageBytes: bytes,
         filename: filename,
@@ -376,6 +449,21 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
         ProfileMenuCard(
           children: [
             ProfileMenuTile(
+              icon: Icons.photo_camera_rounded,
+              label: 'Update profile photo',
+              trailing: _uploadingAvatar
+                  ? const Padding(
+                      padding: EdgeInsets.only(right: 12),
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : null,
+              onTap: _uploadingAvatar ? null : _chooseAvatarSourceAndUpload,
+            ),
+            ProfileMenuTile(
               icon: Icons.person_rounded,
               label: 'Edit profile',
               onTap: () => Navigator.push<void>(
@@ -436,6 +524,21 @@ class _ProfileSecurityScreenState extends State<ProfileSecurityScreen> {
                   builder: (_) => ProfileMfaScreen(authToken: widget.authToken),
                 ),
               ),
+            ),
+            ProfileMenuTile(
+              icon: Icons.fingerprint_rounded,
+              label: 'Biometric login',
+              trailing: Switch.adaptive(
+                value: _biometricAvailable && _biometricLoginEnabled,
+                onChanged: _biometricUpdating
+                    ? null
+                    : (value) => _setBiometricLoginEnabled(value),
+              ),
+              onTap: _biometricUpdating
+                  ? null
+                  : () => _setBiometricLoginEnabled(
+                        !(_biometricAvailable && _biometricLoginEnabled),
+                      ),
             ),
           ],
         ),

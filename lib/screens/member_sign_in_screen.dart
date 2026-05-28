@@ -132,7 +132,11 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
     final id = _memberIdController.text.trim();
     final pass = _passwordController.text;
     if (id.isEmpty || pass.isEmpty) {
-      _showError('Enter your email or member number and password.');
+      _showError('Enter your email address and password.');
+      return;
+    }
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(id)) {
+      _showError('Enter a valid email address.');
       return;
     }
 
@@ -270,13 +274,14 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _buildLabel('Email or Member Number'),
+          _buildLabel('Email Address'),
           const SizedBox(height: 8),
           _buildTextField(
             controller: _memberIdController,
             focusNode: _memberIdFocus,
-            hint: 'e.g. MS-88291',
-            icon: Icons.person_outline_rounded,
+            hint: 'you@example.com',
+            icon: Icons.alternate_email_rounded,
+            keyboardType: TextInputType.emailAddress,
             textInputAction: TextInputAction.next,
             onSubmitted: (_) => _passwordFocus.requestFocus(),
             obscure: false,
@@ -426,6 +431,7 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
     required TextInputAction textInputAction,
     required void Function(String) onSubmitted,
     required bool obscure,
+    TextInputType? keyboardType,
     void Function(String)? onChanged,
     Widget? suffix,
   }) {
@@ -433,6 +439,7 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
       controller: controller,
       focusNode: focusNode,
       obscureText: obscure,
+      keyboardType: keyboardType,
       textInputAction: textInputAction,
       onSubmitted: onSubmitted,
       onChanged: onChanged,

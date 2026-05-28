@@ -91,6 +91,17 @@ class _DepositScreenState extends State<DepositScreen> {
     final amtKes = double.parse(_amount.text.replaceAll(',', ''));
     final amountCents = (amtKes * 100).round();
     if (amountCents < 100) return;
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm deposit',
+      rows: [
+        ('To', '${target.name} · ${target.mask}'),
+        ('Amount', 'KES ${formatKes(amtKes)}'),
+        ('Payment', 'Paystack checkout'),
+      ],
+      confirmLabel: 'Continue',
+    );
+    if (!confirmed) return;
 
     setState(() => _submitting = true);
     try {
@@ -117,8 +128,14 @@ class _DepositScreenState extends State<DepositScreen> {
       );
       if (!mounted) return;
       if (ok?.ok == true) {
-        // Close the deposit page so the user returns to Accounts.
-        Navigator.of(context).pop();
+        await showTransactionReceiptSheet(
+          context,
+          authToken: widget.authToken,
+          transactionRef: ok?.transactionRef ?? '',
+          fallbackTitle: 'Deposit successful',
+          fallbackMessage: ok?.message ?? 'Deposit verified.',
+          icon: Icons.receipt_long_rounded,
+        );
       }
     } catch (e) {
       if (!mounted) return;
@@ -300,10 +317,15 @@ class _PaystackWebViewScreen extends StatefulWidget {
 }
 
 class _PaystackWebViewResult {
-  const _PaystackWebViewResult({required this.ok, required this.message});
+  const _PaystackWebViewResult({
+    required this.ok,
+    required this.message,
+    this.transactionRef,
+  });
 
   final bool ok;
   final String message;
+  final String? transactionRef;
 }
 
 class _PaystackWebViewScreenState extends State<_PaystackWebViewScreen> {
@@ -363,7 +385,11 @@ class _PaystackWebViewScreenState extends State<_PaystackWebViewScreen> {
 
               if (mounted) {
                 Navigator.of(context).pop(
-                  _PaystackWebViewResult(ok: res.ok, message: res.message),
+                  _PaystackWebViewResult(
+                    ok: res.ok,
+                    message: res.message,
+                    transactionRef: res.transactionRef,
+                  ),
                 );
               }
             } catch (e) {

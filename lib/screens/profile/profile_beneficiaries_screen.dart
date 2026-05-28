@@ -20,7 +20,7 @@ class ProfileBeneficiariesScreen extends StatefulWidget {
 class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen> {
   bool _loading = true;
   String? _error;
-  List<MemberTransferBeneficiaryData> _beneficiaries = const [];
+  List<MemberBeneficiaryData> _beneficiaries = const [];
 
   @override
   void initState() {
@@ -35,7 +35,7 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
         _error = null;
       });
       final rows = await ProsaccoMemberAuthApi()
-          .fetchTransferBeneficiaries(token: widget.authToken);
+          .fetchMemberBeneficiaries(token: widget.authToken);
       if (!mounted) return;
       setState(() {
         _beneficiaries = rows;
@@ -50,16 +50,52 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
     }
   }
 
-  Future<void> _openBeneficiaryForm([MemberTransferBeneficiaryData? row]) async {
-    String type = row?.type ?? 'INTERNAL_MEMBER';
-    bool favorite = row?.isFavorite ?? false;
-    final nickname = TextEditingController(text: row?.nickname ?? '');
-    final memberNumber = TextEditingController(text: row?.recipientMemberNumber ?? '');
-    final recipientName = TextEditingController(text: row?.recipientName ?? row?.bankAccountName ?? '');
+  Future<String?> _requestOtpAndPrompt() async {
+    await ProsaccoMemberAuthApi().requestProfileOtp(
+      token: widget.authToken,
+      purpose: 'NEXT_OF_KIN_CHANGE',
+    );
+    if (!mounted) return null;
+    final otp = TextEditingController();
+    final code = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Verify change'),
+        content: TextField(
+          controller: otp,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'OTP code',
+            helperText: 'Enter the verification code sent to you.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, otp.text.trim()),
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+    otp.dispose();
+    return code;
+  }
+
+  Future<void> _openBeneficiaryForm([MemberBeneficiaryData? row]) async {
+    bool isSecondary = row?.isSecondary ?? false;
+    final fullName = TextEditingController(text: row?.fullName ?? '');
+    final relationship = TextEditingController(text: row?.relationship == '—' ? '' : row?.relationship ?? '');
+    final nationalId = TextEditingController(text: row?.nationalId == '—' ? '' : row?.nationalId ?? '');
     final phone = TextEditingController(text: row?.phone ?? '');
-    final bankName = TextEditingController(text: row?.bankName ?? '');
-    final bankAccount = TextEditingController(text: row?.bankAccountNumber ?? '');
-    final mobileNetwork = TextEditingController(text: row?.mobileNetwork ?? '');
+    final email = TextEditingController(text: row?.email ?? '');
+    final address = TextEditingController(text: row?.physicalAddress ?? '');
+    final dateOfBirth = TextEditingController(text: row?.dateOfBirth ?? '');
+    final share = TextEditingController(text: row?.nominationPercent?.toString() ?? '');
     bool saving = false;
 
     await showDialog<void>(
@@ -68,31 +104,32 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) {
           Future<void> save() async {
+            if (fullName.text.trim().isEmpty || relationship.text.trim().isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Enter the full name and relationship.')),
+              );
+              return;
+            }
+            final otpCode = await _requestOtpAndPrompt();
+            if (otpCode == null || otpCode.isEmpty) return;
             final payload = <String, dynamic>{
-              'type': type,
-              'nickname': nickname.text.trim(),
-              'isFavorite': favorite,
-              if (type == 'INTERNAL_MEMBER')
-                'recipientMemberNumber': memberNumber.text.trim(),
-              if (type == 'EXTERNAL_BANK') ...{
-                'bankName': bankName.text.trim(),
-                'bankAccountNumber': bankAccount.text.trim(),
-                'bankAccountName': recipientName.text.trim(),
-              },
-              if (type == 'MOBILE_WALLET') ...{
-                'recipientName': recipientName.text.trim(),
-                'phone': phone.text.trim(),
-                'mobileNetwork': mobileNetwork.text.trim().isEmpty
-                    ? null
-                    : mobileNetwork.text.trim(),
-              },
+              'fullName': fullName.text.trim(),
+              'relationship': relationship.text.trim(),
+              'nationalId': nationalId.text.trim(),
+              'phone': phone.text.trim(),
+              'email': email.text.trim(),
+              'physicalAddress': address.text.trim(),
+              'dateOfBirth': dateOfBirth.text.trim(),
+              'nominationPercent': int.tryParse(share.text.trim()),
+              'isSecondary': isSecondary,
             };
             setDialogState(() => saving = true);
             try {
-              await ProsaccoMemberAuthApi().saveTransferBeneficiary(
+              await ProsaccoMemberAuthApi().saveMemberBeneficiary(
                 token: widget.authToken,
                 id: row?.id,
                 payload: payload,
+                otpCode: otpCode,
               );
               if (!mounted) return;
               Navigator.pop(dialogContext);
@@ -114,54 +151,61 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
             }
           }
 
+          final p = context.pal;
           return AlertDialog(
-            title: Text(row == null ? 'Add transfer beneficiary' : 'Edit beneficiary'),
+            backgroundColor: p.surfaceContainerLowest,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            titlePadding: const EdgeInsets.fromLTRB(24, 22, 24, 6),
+            contentPadding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+            actionsPadding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
+            title: Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: p.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(Icons.person_add_alt_1_rounded, color: p.primary),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    row == null ? 'Add share beneficiary' : 'Edit beneficiary',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w900,
+                          color: p.headlineGreen,
+                        ),
+                  ),
+                ),
+              ],
+            ),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  DropdownButtonFormField<String>(
-                    value: type,
-                    decoration: const InputDecoration(labelText: 'Beneficiary type'),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'INTERNAL_MEMBER',
-                        child: Text('Internal SACCO member'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'EXTERNAL_BANK',
-                        child: Text('External bank account'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'MOBILE_WALLET',
-                        child: Text('Mobile wallet'),
-                      ),
-                    ],
-                    onChanged: row == null
-                        ? (value) => setDialogState(() {
-                              type = value ?? 'INTERNAL_MEMBER';
-                            })
-                        : null,
+                  Text(
+                    'Add next of kin or nominees who can receive your shares or benefits according to your SACCO records.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: p.onSurfaceVariant,
+                          height: 1.35,
+                        ),
                   ),
-                  _dialogField('Nickname', nickname),
-                  if (type == 'INTERNAL_MEMBER')
-                    _dialogField('Recipient member number', memberNumber),
-                  if (type == 'EXTERNAL_BANK') ...[
-                    _dialogField('Bank name', bankName),
-                    _dialogField('Account number', bankAccount,
-                        keyboardType: TextInputType.number),
-                    _dialogField('Account name', recipientName),
-                  ],
-                  if (type == 'MOBILE_WALLET') ...[
-                    _dialogField('Recipient name', recipientName),
-                    _dialogField('Phone number', phone,
-                        keyboardType: TextInputType.phone),
-                    _dialogField('Mobile network', mobileNetwork),
-                  ],
+                  const SizedBox(height: 14),
+                  _dialogField('Full name', fullName),
+                  _dialogField('Relationship', relationship),
+                  _dialogField('National ID / Passport', nationalId),
+                  _dialogField('Phone number', phone, keyboardType: TextInputType.phone),
+                  _dialogField('Email', email, keyboardType: TextInputType.emailAddress),
+                  _dialogField('Physical address', address),
+                  _dialogField('Date of birth (YYYY-MM-DD)', dateOfBirth),
+                  _dialogField('Nomination share %', share, keyboardType: TextInputType.number),
                   SwitchListTile(
-                    value: favorite,
-                    onChanged: (value) => setDialogState(() => favorite = value),
-                    title: const Text('Mark as favorite'),
+                    value: isSecondary,
+                    onChanged: (value) => setDialogState(() => isSecondary = value),
+                    title: const Text('Secondary beneficiary'),
                     contentPadding: EdgeInsets.zero,
                   ),
                 ],
@@ -174,6 +218,10 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
               ),
               FilledButton(
                 onPressed: saving ? null : save,
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
                 child: Text(saving ? 'Saving...' : 'Save'),
               ),
             ],
@@ -182,21 +230,22 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
       ),
     );
 
-    nickname.dispose();
-    memberNumber.dispose();
-    recipientName.dispose();
+    fullName.dispose();
+    relationship.dispose();
+    nationalId.dispose();
     phone.dispose();
-    bankName.dispose();
-    bankAccount.dispose();
-    mobileNetwork.dispose();
+    email.dispose();
+    address.dispose();
+    dateOfBirth.dispose();
+    share.dispose();
   }
 
-  Future<void> _deleteBeneficiary(MemberTransferBeneficiaryData row) async {
+  Future<void> _deleteBeneficiary(MemberBeneficiaryData row) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete beneficiary?'),
-        content: Text('Remove ${row.nickname} from your saved transfer beneficiaries?'),
+        content: Text('Remove ${row.fullName} from your next-of-kin beneficiaries?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -212,9 +261,12 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
     );
     if (confirmed != true) return;
     try {
-      await ProsaccoMemberAuthApi().deleteTransferBeneficiary(
+      final otpCode = await _requestOtpAndPrompt();
+      if (otpCode == null || otpCode.isEmpty) return;
+      await ProsaccoMemberAuthApi().deleteMemberBeneficiary(
         token: widget.authToken,
         id: row.id,
+        otpCode: otpCode,
       );
       await _load();
       if (!mounted) return;
@@ -239,30 +291,19 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
       child: TextField(
         controller: controller,
         keyboardType: keyboardType,
-        decoration: InputDecoration(labelText: label),
+        decoration: InputDecoration(
+          labelText: label,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+          filled: true,
+          fillColor: context.pal.surfaceContainerLow,
+        ),
       ),
     );
   }
 
-  String _typeLabel(String type) {
-    switch (type) {
-      case 'EXTERNAL_BANK':
-        return 'Bank';
-      case 'MOBILE_WALLET':
-        return 'Mobile wallet';
-      default:
-        return 'SACCO member';
-    }
-  }
-
-  String _subtitle(MemberTransferBeneficiaryData row) {
-    if (row.type == 'INTERNAL_MEMBER') {
-      return '${row.recipientName ?? 'Member'} · ${row.recipientMemberNumber ?? '—'}';
-    }
-    if (row.type == 'EXTERNAL_BANK') {
-      return '${row.bankName ?? 'Bank'} · ${row.bankAccountNumber ?? '—'}';
-    }
-    return '${row.recipientName ?? 'Wallet'} · ${row.phone ?? '—'}';
+  String _subtitle(MemberBeneficiaryData row) {
+    final share = row.nominationPercent == null ? row.share : '${row.nominationPercent}%';
+    return '${row.relationship} · Share: $share · ${row.phone.isEmpty ? 'No phone' : row.phone}';
   }
 
   @override
@@ -270,7 +311,7 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
     final p = context.pal;
     return Scaffold(
       backgroundColor: p.surface,
-      appBar: AppBar(title: const Text('Transfer Beneficiaries')),
+      appBar: AppBar(title: const Text('Share Beneficiaries')),
       body: _loading
           ? const Center(child: ProsaccoAnimatedLoader(size: 110))
           : RefreshIndicator(
@@ -279,7 +320,7 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
                 padding: const EdgeInsets.all(24),
                 children: [
                   Text(
-                    'Save frequent recipients for internal SACCO transfers, bank transfers, and mobile wallet transfers.',
+                    'Manage next of kin and nominees linked to your shares and member benefits. Transfer beneficiaries are managed from transfer flows.',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: p.onSurfaceVariant,
                         ),
@@ -299,7 +340,7 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
                         border: Border.all(color: p.outline.withValues(alpha: 0.1)),
                       ),
                       child: Text(
-                        'No transfer beneficiaries saved yet.',
+                        'No share beneficiaries or next of kin saved yet.',
                         style: TextStyle(color: p.onSurfaceVariant),
                       ),
                     ),
@@ -315,23 +356,21 @@ class _ProfileBeneficiariesScreenState extends State<ProfileBeneficiariesScreen>
                         leading: CircleAvatar(
                           backgroundColor: p.secondaryContainer.withValues(alpha: 0.4),
                           child: Icon(
-                            row.type == 'EXTERNAL_BANK'
-                                ? Icons.account_balance_rounded
-                                : row.type == 'MOBILE_WALLET'
-                                    ? Icons.phone_android_rounded
-                                    : Icons.person_rounded,
+                            row.isSecondary
+                                ? Icons.group_rounded
+                                : Icons.volunteer_activism_rounded,
                             color: p.primary,
                           ),
                         ),
                         title: Text(
-                          row.nickname,
+                          row.fullName,
                           style: TextStyle(
                             fontWeight: FontWeight.w700,
                             color: p.onSurface,
                           ),
                         ),
                         subtitle: Text(
-                          '${_typeLabel(row.type)} · ${_subtitle(row)}',
+                          _subtitle(row),
                           style: TextStyle(color: p.onSurfaceVariant),
                         ),
                         trailing: PopupMenuButton<String>(

@@ -93,31 +93,63 @@ class _BuySharesScreenState extends State<BuySharesScreen> {
   Future<void> _submit() async {
     if (!_ok || _ctx == null || _amt == null) return;
     final amountCents = (_amt! * 100).round();
+    final sourceLabel = switch (_source) {
+      _PaySource.fosa => 'FOSA Account',
+      _PaySource.bosa => 'BOSA Savings',
+      _PaySource.paystack => 'Paystack',
+    };
+    final fee = await previewFlowFee(
+      context,
+      authToken: widget.authToken,
+      serviceType: 'SHARE_PURCHASE',
+      amountCents: amountCents,
+      contextData: {
+        'sharesCount': _sharesPreview,
+        'pricePerShare': _ctx!.pricePerShareCents,
+      },
+    );
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm share purchase',
+      rows: [
+        ('Pay from', sourceLabel),
+        ('Amount', 'KES ${formatKes(_amt!)}'),
+        ('Transfer fee', 'KES ${formatKes(fee.feeAmount / 100)}'),
+        ('Total debit', 'KES ${formatKes(fee.totalAmount / 100)}'),
+        ('Shares', '$_sharesPreview unit(s)'),
+      ],
+      confirmLabel: 'Buy Shares',
+    );
+    if (!confirmed) return;
     setState(() => _submitting = true);
     try {
       final api = ProsaccoMemberAuthApi();
       if (_source == _PaySource.fosa) {
-        await api.buySharesFromFosa(
+        final result = await api.buySharesFromFosa(
           token: widget.authToken,
           amountCents: amountCents,
         );
         if (!mounted) return;
-        await showFlowSuccessSheet(
+        await showTransactionReceiptSheet(
           context,
-          title: 'Shares purchased',
-          message:
+          authToken: widget.authToken,
+          transactionRef: result.transactionRef,
+          fallbackTitle: 'Shares purchased',
+          fallbackMessage:
               'KES ${formatKes(_amt!)} debited from FOSA. You received $_sharesPreview unit(s).',
         );
       } else if (_source == _PaySource.bosa) {
-        await api.buySharesFromBosa(
+        final result = await api.buySharesFromBosa(
           token: widget.authToken,
           amountCents: amountCents,
         );
         if (!mounted) return;
-        await showFlowSuccessSheet(
+        await showTransactionReceiptSheet(
           context,
-          title: 'Shares purchased',
-          message:
+          authToken: widget.authToken,
+          transactionRef: result.transactionRef,
+          fallbackTitle: 'Shares purchased',
+          fallbackMessage:
               'KES ${formatKes(_amt!)} debited from BOSA. You received $_sharesPreview unit(s).',
         );
       } else {

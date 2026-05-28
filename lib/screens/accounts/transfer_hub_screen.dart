@@ -66,8 +66,8 @@ class TransferHubScreen extends StatelessWidget {
           const SizedBox(height: 12),
           _HubTile(
             icon: Icons.swap_horiz_rounded,
-            title: 'Move to savings',
-            subtitle: 'Transfer from FOSA to your BOSA savings account',
+            title: 'Between my accounts',
+            subtitle: 'Move funds between eligible accounts you own',
             onTap: () => Navigator.push<void>(
               context,
               MaterialPageRoute<void>(

@@ -105,12 +105,34 @@ class _TransferMobileScreenState extends State<TransferMobileScreen> {
     }
     final amountCents = (_amt! * 100).round();
     final digits = _phone.text.replaceAll(RegExp(r'\D'), '');
+    final fee = await previewFlowFee(
+      context,
+      authToken: widget.authToken,
+      serviceType: 'FOSA_WITHDRAWAL',
+      amountCents: amountCents,
+      contextData: {'channel': 'MPESA'},
+    );
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm mobile transfer',
+      rows: [
+        ('From', '${_source!.name} · ${_source!.mask}'),
+        ('Mobile number', _phone.text.trim()),
+        ('Amount', 'KES ${formatKes(_amt!)}'),
+        ('Transfer fee', 'KES ${formatKes(fee.feeAmount / 100)}'),
+        ('Total debit', 'KES ${formatKes(fee.totalAmount / 100)}'),
+        if (_reason.text.trim().isNotEmpty) ('Reason', _reason.text.trim()),
+      ],
+      confirmLabel: 'Send Money',
+    );
+    if (!confirmed) return;
 
     setState(() => _submitting = true);
     try {
       final api = ProsaccoMemberAuthApi();
+      late MemberTransactionResult result;
       try {
-        await api.withdrawFosa(
+        result = await api.withdrawFosa(
           token: widget.authToken,
           amountCents: amountCents,
           channel: 'MPESA',
@@ -125,7 +147,7 @@ class _TransferMobileScreenState extends State<TransferMobileScreen> {
         if (!mounted) return;
         final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
         if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
-        await api.withdrawFosa(
+        result = await api.withdrawFosa(
           token: widget.authToken,
           amountCents: amountCents,
           channel: 'MPESA',
@@ -136,10 +158,12 @@ class _TransferMobileScreenState extends State<TransferMobileScreen> {
       }
 
       if (!mounted) return;
-      await showFlowSuccessSheet(
+      await showTransactionReceiptSheet(
         context,
-        title: 'Transfer successful',
-        message:
+        authToken: widget.authToken,
+        transactionRef: result.transactionRef,
+        fallbackTitle: 'Transfer successful',
+        fallbackMessage:
             'KES ${formatKes(_amt!)} sent to ${_phone.text.trim()} from ${_source!.name}.',
       );
     } catch (e) {

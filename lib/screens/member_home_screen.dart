@@ -1058,6 +1058,7 @@ class _RecentTransactions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibility = BalanceVisibilityScope.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1102,6 +1103,10 @@ class _RecentTransactions extends StatelessWidget {
         else
           ...transactions.map((t) {
             final credit = t.type.toLowerCase() == 'credit';
+            final amountText = visibility.formatAmount(
+              '${credit ? '+' : '-'}${_fmtAmount(t.amountCents)}',
+              hidden: '${credit ? '+' : '-'}••••',
+            );
             return Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: _TxnRow(
@@ -1110,7 +1115,7 @@ class _RecentTransactions extends StatelessWidget {
                 iconFg: credit ? context.pal.tertiary : context.pal.error,
                 title: t.description,
                 subtitle: '${t.date} • ${t.account}',
-                amount: '${credit ? '+' : '-'}${_fmtAmount(t.amountCents)}',
+                amount: amountText,
                 amountColor: credit ? context.pal.tertiary : context.pal.onSurface,
                 status: t.account,
               ),

@@ -77,14 +77,14 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
           .toList()
           .where((o) => o.id == 'fosa')
           .toList();
-      if (!mounted) return;
+      if (!mounted) throw 'Withdrawal verification was cancelled.';
       setState(() {
         _options = options;
         _from = options.isNotEmpty ? options.first : null;
         _loading = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) throw 'Withdrawal verification was cancelled.';
       setState(() {
         _loadError = e?.toString() ?? 'Failed to load accounts.';
         _options = const [];
@@ -154,7 +154,7 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
     }
   }
 
-  Future<void> _withdrawWithOtp({
+  Future<MemberTransactionResult> _withdrawWithOtp({
     required int amountCents,
     required String channel,
     String? phoneNumber,
@@ -163,7 +163,7 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
   }) async {
     final api = ProsaccoMemberAuthApi();
     try {
-      await api.withdrawFosa(
+      return await api.withdrawFosa(
         token: widget.authToken,
         amountCents: amountCents,
         channel: channel,
@@ -177,10 +177,10 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
         purpose: e.purpose,
         amountCents: e.amountCents,
       );
-      if (!mounted) return;
+      if (!mounted) throw 'Withdrawal verification was cancelled.';
       final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
       if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
-      await api.withdrawFosa(
+      return await api.withdrawFosa(
         token: widget.authToken,
         amountCents: amountCents,
         channel: channel,
@@ -207,6 +207,15 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
     }
 
     final p = context.pal;
+    final backendChannel =
+        _channel == 'Bank transfer' ? 'BANK_TRANSFER' : 'MPESA';
+    final fee = await previewFlowFee(
+      context,
+      authToken: widget.authToken,
+      serviceType: 'FOSA_WITHDRAWAL',
+      amountCents: amountCents,
+      contextData: {'channel': backendChannel},
+    );
     if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
@@ -239,18 +248,15 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
                 _row(ctx, 'From account', _from!.name),
                 _row(ctx, 'Channel', _channel),
                 _row(ctx, 'Amount', 'KES ${formatKes(amt)}'),
+                _row(ctx, 'Transfer fee', 'KES ${formatKes(fee.feeAmount / 100)}'),
+                _row(ctx, 'Total debit', 'KES ${formatKes(fee.totalAmount / 100)}'),
                 const SizedBox(height: 22),
                 FilledButton(
                   onPressed: _isFormOk
                       ? () async {
                           setState(() => _withdrawing = true);
                           try {
-                            final backendChannel =
-                                _channel == 'Bank transfer'
-                                    ? 'BANK_TRANSFER'
-                                    : 'MPESA';
-
-                            await _withdrawWithOtp(
+                            final result = await _withdrawWithOtp(
                               amountCents: amountCents,
                               channel: backendChannel,
                               phoneNumber: backendChannel == 'MPESA'
@@ -266,10 +272,12 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
                             );
 
                             Navigator.pop(ctx);
-                            await showFlowSuccessSheet(
+                            await showTransactionReceiptSheet(
                               context,
-                              title: 'Withdrawal successful',
-                              message:
+                              authToken: widget.authToken,
+                              transactionRef: result.transactionRef,
+                              fallbackTitle: 'Withdrawal successful',
+                              fallbackMessage:
                                   'KES ${formatKes(amt)} was processed via $_channel.',
                             );
                           } catch (e) {

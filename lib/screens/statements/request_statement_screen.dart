@@ -4,7 +4,7 @@ import '../../theme/prosacco_palette.dart';
 import '../../utils/prosacco_member_auth_api.dart';
 import 'statement_models.dart';
 
-/// Collect email and simulate sending a password-protected PDF statement.
+/// Collect email and request a backend-generated PDF statement.
 class RequestStatementScreen extends StatefulWidget {
   const RequestStatementScreen({
     super.key,

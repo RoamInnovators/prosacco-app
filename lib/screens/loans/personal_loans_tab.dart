@@ -4,6 +4,7 @@ import '../../theme/prosacco_palette.dart';
 import '../../utils/prosacco_member_auth_api.dart';
 import 'apply_loan_flow.dart';
 import 'loan_data.dart';
+import 'loan_report_tab.dart';
 
 /// "Personal Loans" top-level tab — loads real products and applications from API.
 class PersonalLoansTab extends StatefulWidget {
@@ -81,21 +82,37 @@ class _PersonalLoansTabState extends State<PersonalLoansTab> {
       length: 3,
       child: Column(
         children: [
-          TabBar(
-            isScrollable: true,
-            labelColor: context.pal.primary,
-            unselectedLabelColor: context.pal.slateMuted,
-            indicatorColor: context.pal.primary,
-            indicatorWeight: 3,
-            labelStyle: Theme.of(context)
-                .textTheme
-                .labelLarge
-                ?.copyWith(fontWeight: FontWeight.w800),
-            tabs: const [
-              Tab(text: 'My loans'),
-              Tab(text: 'Apply Loan'),
-              Tab(text: 'My Applications'),
-            ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+            child: Container(
+              height: 44,
+              decoration: BoxDecoration(
+                color: context.pal.surfaceContainerLowest,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: context.pal.outline.withValues(alpha: 0.12)),
+              ),
+              child: TabBar(
+                isScrollable: true,
+                dividerColor: Colors.transparent,
+                labelColor: Colors.white,
+                unselectedLabelColor: context.pal.slateMuted,
+                indicator: BoxDecoration(
+                  color: context.pal.primary,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                indicatorSize: TabBarIndicatorSize.tab,
+                labelStyle: Theme.of(context)
+                    .textTheme
+                    .labelLarge
+                    ?.copyWith(fontWeight: FontWeight.w900),
+                tabs: const [
+                  Tab(text: 'My Loans'),
+                  Tab(text: 'Apply Loan'),
+                  Tab(text: 'My Applications'),
+                  Tab(text: 'Loan Report'),
+                ],
+              ),
+            ),
           ),
           Expanded(
             child: TabBarView(
@@ -106,6 +123,7 @@ class _PersonalLoansTabState extends State<PersonalLoansTab> {
                   authToken: widget.authToken,
                 ),
                 _MyApplicationsList(applications: _applications),
+                LoanReportTab(authToken: widget.authToken, applications: _applications),
               ],
             ),
           ),

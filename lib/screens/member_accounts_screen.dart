@@ -8,6 +8,7 @@ import '../widgets/prosacco_animated_loader.dart';
 import 'accounts/buy_shares_screen.dart';
 import 'accounts/deposit_screen.dart';
 import 'accounts/payment_hub_screen.dart';
+import 'accounts/share_marketplace_screen.dart';
 import 'accounts/transfer_hub_screen.dart';
 import 'accounts/withdraw_screen.dart';
 
@@ -442,7 +443,9 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
       isShareCapital
           ? (Icons.bar_chart_rounded, 'Buy Shares')
           : (Icons.savings_outlined, 'Deposit'),
-      (Icons.receipt_long_rounded, 'Pay'),
+      isShareCapital
+          ? (Icons.storefront_rounded, 'Market')
+          : (Icons.receipt_long_rounded, 'Pay'),
       (Icons.payments_outlined, 'Withdraw'),
       (Icons.swap_horiz_rounded, 'Transfer'),
     ];
@@ -472,6 +475,8 @@ class _MemberAccountsScreenState extends State<MemberAccountsScreen> {
                     open(DepositScreen(authToken: widget.authToken));
                   case 'Buy Shares':
                     open(BuySharesScreen(authToken: widget.authToken));
+                  case 'Market':
+                    open(ShareMarketplaceScreen(authToken: widget.authToken));
                   case 'Pay':
                     open(PaymentHubScreen(authToken: widget.authToken));
                   case 'Withdraw':
@@ -775,6 +780,7 @@ class _FlowTxnRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibility = BalanceVisibilityScope.of(context);
     final arrowBg = txn.incoming
         ? context.pal.tertiary.withValues(alpha: 0.12)
         : context.pal.error.withValues(alpha: 0.1);
@@ -835,7 +841,10 @@ class _FlowTxnRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    txn.amountLabel,
+                    visibility.formatAmount(
+                      txn.amountLabel,
+                      hidden: '${txn.incoming ? '+ ' : '- '}••••',
+                    ),
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.w800,
                           color: amountColor,

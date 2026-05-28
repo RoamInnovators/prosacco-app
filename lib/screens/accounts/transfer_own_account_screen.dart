@@ -19,8 +19,9 @@ class TransferOwnAccountScreen extends StatefulWidget {
 
 class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
   final _amount = TextEditingController();
-  double? _fosaBalance;
-  double? _bosaBalance;
+  List<MemberAccountOption> _accounts = const [];
+  MemberAccountOption? _from;
+  MemberAccountOption? _to;
   bool _loading = true;
   String? _loadError;
   bool _submitting = false;
@@ -28,7 +29,7 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
   @override
   void initState() {
     super.initState();
-    _loadBalances();
+    _loadAccounts();
   }
 
   @override
@@ -37,22 +38,32 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
     super.dispose();
   }
 
-  Future<void> _loadBalances() async {
+  Future<void> _loadAccounts() async {
     try {
       setState(() {
         _loading = true;
         _loadError = null;
       });
       final api = ProsaccoMemberAuthApi();
-      final overview = await api.fetchMemberAccountsOverview(
+      final picked = await api.fetchMemberAccountOptionsForPickers(
         token: widget.authToken,
       );
+      final accounts = picked
+          .where((o) => o.id == 'fosa' || o.id == 'bosa')
+          .map(
+            (o) => MemberAccountOption(
+              id: o.id,
+              name: o.name,
+              mask: o.mask,
+              balance: o.balanceCents / 100.0,
+            ),
+          )
+          .toList();
       if (!mounted) return;
       setState(() {
-        _fosaBalance =
-            (overview.fosa.account?.balanceCents ?? 0) / 100.0;
-        _bosaBalance =
-            (overview.bosa.account?.balanceCents ?? 0) / 100.0;
+        _accounts = accounts;
+        _from = accounts.isNotEmpty ? accounts.first : null;
+        _to = accounts.length > 1 ? accounts[1] : null;
         _loading = false;
       });
     } catch (e) {
@@ -68,27 +79,80 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
       double.tryParse(_amount.text.replaceAll(',', ''))?.clamp(0, 1e15);
 
   bool get _ok =>
-      _fosaBalance != null &&
+      _from != null &&
+      _to != null &&
+      _from!.id != _to!.id &&
       _amt != null &&
       _amt! > 0 &&
       !_submitting;
 
+  List<MemberAccountOption> get _destinationOptions =>
+      _accounts.where((a) => a.id != _from?.id).toList();
+
+  void _setFrom(MemberAccountOption? account) {
+    setState(() {
+      _from = account;
+      final destinations = _destinationOptions;
+      if (_to == null || _to!.id == account?.id || !destinations.any((a) => a.id == _to!.id)) {
+        _to = destinations.isNotEmpty ? destinations.first : null;
+      }
+    });
+  }
+
   Future<void> _submit() async {
     if (!_ok || _amt == null) return;
-    if (_fosaBalance != null && _amt! > _fosaBalance!) {
-      showFlowErrorSnack(context, 'Insufficient FOSA balance.');
+    final from = _from!;
+    final to = _to!;
+    if (_amt! > from.balance) {
+      showFlowErrorSnack(context, 'Insufficient ${from.name} balance.');
+      return;
+    }
+    final supported = (from.id == 'fosa' && to.id == 'bosa') ||
+        (from.id == 'bosa' && to.id == 'fosa');
+    if (!supported) {
+      showFlowErrorSnack(context, 'This account transfer route is not available yet.');
       return;
     }
     final amountCents = (_amt! * 100).round();
+    final fee = from.id == 'fosa' && to.id == 'bosa'
+        ? await previewFlowFee(
+            context,
+            authToken: widget.authToken,
+            serviceType: 'FOSA_WITHDRAWAL',
+            amountCents: amountCents,
+            contextData: {'channel': 'TRANSFER'},
+          )
+        : MemberFeePreview(feeAmount: 0, totalAmount: amountCents);
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm own account transfer',
+      rows: [
+        ('From', '${from.name} · ${from.mask}'),
+        ('To', '${to.name} · ${to.mask}'),
+        ('Amount', 'KES ${formatKes(_amt!)}'),
+        ('Transfer fee', 'KES ${formatKes(fee.feeAmount / 100)}'),
+        ('Total debit', 'KES ${formatKes(fee.totalAmount / 100)}'),
+      ],
+      confirmLabel: 'Transfer Funds',
+    );
+    if (!confirmed) return;
 
     setState(() => _submitting = true);
     try {
       final api = ProsaccoMemberAuthApi();
+      late MemberTransactionResult result;
       try {
-        await api.transferFosaToBosa(
-          token: widget.authToken,
-          amountCents: amountCents,
-        );
+        if (from.id == 'fosa' && to.id == 'bosa') {
+          result = await api.transferFosaToBosa(
+            token: widget.authToken,
+            amountCents: amountCents,
+          );
+        } else {
+          result = await api.transferBosaToFosa(
+            token: widget.authToken,
+            amountCents: amountCents,
+          );
+        }
       } on MemberSecurityOtpRequiredException catch (e) {
         final challenge = await api.requestTransactionOtp(
           token: widget.authToken,
@@ -98,23 +162,34 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
         if (!mounted) return;
         final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
         if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
-        await api.transferFosaToBosa(
-          token: widget.authToken,
-          amountCents: amountCents,
-          securityOtpChallengeId: challenge.challengeId,
-          securityOtpCode: code,
-        );
+        if (from.id == 'fosa' && to.id == 'bosa') {
+          result = await api.transferFosaToBosa(
+            token: widget.authToken,
+            amountCents: amountCents,
+            securityOtpChallengeId: challenge.challengeId,
+            securityOtpCode: code,
+          );
+        } else {
+          result = await api.transferBosaToFosa(
+            token: widget.authToken,
+            amountCents: amountCents,
+            securityOtpChallengeId: challenge.challengeId,
+            securityOtpCode: code,
+          );
+        }
       }
       if (!mounted) return;
-      await showFlowSuccessSheet(
+      await showTransactionReceiptSheet(
         context,
-        title: 'Transfer successful',
-        message:
-            'KES ${formatKes(_amt!)} moved from your FOSA to your BOSA savings.',
+        authToken: widget.authToken,
+        transactionRef: result.transactionRef,
+        fallbackTitle: 'Transfer successful',
+        fallbackMessage:
+            'KES ${formatKes(_amt!)} moved from ${from.name} to ${to.name}.',
       );
       // Refresh balances after success
       _amount.clear();
-      _loadBalances();
+      _loadAccounts();
     } catch (e) {
       if (!mounted) return;
       showFlowErrorSnack(context, e?.toString() ?? 'Transfer failed.');
@@ -130,14 +205,14 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
     if (_loading) {
       return Scaffold(
         backgroundColor: p.surface,
-        appBar: AppBar(title: const Text('Move to savings')),
+        appBar: AppBar(title: const Text('Own account transfer')),
         body: const Center(child: ProsaccoAnimatedLoader(size: 110)),
       );
     }
 
     return Scaffold(
       backgroundColor: p.surface,
-      appBar: AppBar(title: const Text('Move to savings')),
+      appBar: AppBar(title: const Text('Own account transfer')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
         children: [
@@ -149,7 +224,15 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             ),
-          // Balance summary card
+          if (_accounts.length < 2)
+            FlowSectionCard(
+              title: 'Account transfer unavailable',
+              child: Text(
+                'You need at least two eligible accounts to move funds between your own accounts.',
+                style: TextStyle(color: p.onSurfaceVariant, height: 1.4),
+              ),
+            ),
+          if (_accounts.length >= 2) ...[
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -160,8 +243,8 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
               children: [
                 Expanded(
                   child: _BalancePill(
-                    label: 'FOSA',
-                    balance: _fosaBalance,
+                    label: _from?.name ?? 'From account',
+                    balance: _from?.balance,
                     palette: p,
                   ),
                 ),
@@ -172,8 +255,8 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
                 ),
                 Expanded(
                   child: _BalancePill(
-                    label: 'BOSA',
-                    balance: _bosaBalance,
+                    label: _to?.name ?? 'To account',
+                    balance: _to?.balance,
                     palette: p,
                   ),
                 ),
@@ -181,6 +264,44 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
             ),
           ),
           const SizedBox(height: 20),
+          FlowSectionCard(
+            title: 'From account',
+            child: DropdownButtonFormField<MemberAccountOption>(
+              value: _from,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              items: _accounts
+                  .map(
+                    (a) => DropdownMenuItem(
+                      value: a,
+                      child: Text('${a.name} · KES ${formatKes(a.balance)}'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: _setFrom,
+            ),
+          ),
+          const SizedBox(height: 14),
+          FlowSectionCard(
+            title: 'To account',
+            child: DropdownButtonFormField<MemberAccountOption>(
+              value: _to,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              items: _destinationOptions
+                  .map(
+                    (a) => DropdownMenuItem(
+                      value: a,
+                      child: Text('${a.name} · ${a.mask}'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) => setState(() => _to = v),
+            ),
+          ),
+          const SizedBox(height: 14),
           FlowSectionCard(
             title: 'Amount to move',
             child: TextField(
@@ -218,10 +339,11 @@ class _TransferOwnAccountScreenState extends State<TransferOwnAccountScreen> {
                     ),
                   )
                 : const Text(
-                    'Move to BOSA savings',
+                    'Move funds',
                     style: TextStyle(fontWeight: FontWeight.w800),
                   ),
           ),
+          ],
         ],
       ),
     );

@@ -96,12 +96,34 @@ class _TransferMemberScreenState extends State<TransferMemberScreen> {
     }
     final amountCents = (_amt! * 100).round();
     final recipientMemberId = _memberAcc.text.trim();
+    final fee = await previewFlowFee(
+      context,
+      authToken: widget.authToken,
+      serviceType: 'ACCOUNT_TRANSFER',
+      amountCents: amountCents,
+      contextData: {'channel': 'INTERNAL'},
+    );
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm member transfer',
+      rows: [
+        ('From', '${_source!.name} · ${_source!.mask}'),
+        ('Recipient', recipientMemberId),
+        ('Amount', 'KES ${formatKes(_amt!)}'),
+        ('Transfer fee', 'KES ${formatKes(fee.feeAmount / 100)}'),
+        ('Total debit', 'KES ${formatKes(fee.totalAmount / 100)}'),
+        if (_reason.text.trim().isNotEmpty) ('Reason', _reason.text.trim()),
+      ],
+      confirmLabel: 'Send Money',
+    );
+    if (!confirmed) return;
 
     setState(() => _submitting = true);
     try {
       final api = ProsaccoMemberAuthApi();
+      late MemberTransactionResult result;
       try {
-        await api.sendToMemberFosa(
+        result = await api.sendToMemberFosa(
           token: widget.authToken,
           recipientMemberId: recipientMemberId,
           amountCents: amountCents,
@@ -115,7 +137,7 @@ class _TransferMemberScreenState extends State<TransferMemberScreen> {
         if (!mounted) return;
         final code = await promptMemberSecurityOtp(context, sentTo: challenge.sentTo);
         if (code == null || code.isEmpty) throw 'OTP verification was cancelled.';
-        await api.sendToMemberFosa(
+        result = await api.sendToMemberFosa(
           token: widget.authToken,
           recipientMemberId: recipientMemberId,
           amountCents: amountCents,
@@ -125,10 +147,12 @@ class _TransferMemberScreenState extends State<TransferMemberScreen> {
       }
 
       if (!mounted) return;
-      await showFlowSuccessSheet(
+      await showTransactionReceiptSheet(
         context,
-        title: 'Transfer successful',
-        message:
+        authToken: widget.authToken,
+        transactionRef: result.transactionRef,
+        fallbackTitle: 'Transfer successful',
+        fallbackMessage:
             'KES ${formatKes(_amt!)} sent to member $recipientMemberId from ${_source!.name}.',
       );
     } catch (e) {

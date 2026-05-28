@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -35,6 +36,8 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   static const String _spTokenKey = 'prosacco_member_token';
   static const String _spDisplayNameKey = 'prosacco_member_display_name';
+  static const String _spBiometricLoginEnabledKey =
+      'prosacco_biometric_login_enabled';
   static const String _privacyConsentVersion = '2026-04-01';
   static const String _spPrivacyConsentKey = 'prosacco_privacy_consent_version';
 
@@ -192,6 +195,10 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 
   Future<bool> _requireBiometricIfAvailable() async {
+    final sp = await SharedPreferences.getInstance();
+    final biometricEnabled = sp.getBool(_spBiometricLoginEnabledKey) ?? true;
+    if (!biometricEnabled) return true;
+
     final auth = LocalAuthentication();
     try {
       final supported = await auth.isDeviceSupported();
@@ -204,6 +211,9 @@ class _AppBootstrapState extends State<AppBootstrap> {
           stickyAuth: true,
         ),
       );
+    } on PlatformException catch (e) {
+      debugPrint('Biometric authentication unavailable: ${e.code}');
+      return true;
     } catch (_) {
       return true;
     }

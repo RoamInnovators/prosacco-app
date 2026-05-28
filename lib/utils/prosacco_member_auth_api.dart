@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:shared_preferences/shared_preferences.dart';
 import '../screens/statements/statement_models.dart';
@@ -612,7 +613,7 @@ class ProsaccoMemberAuthApi {
     throw lastError ?? 'Failed to initiate Paystack deposit.';
   }
 
-  Future<void> withdrawFosa({
+  Future<MemberTransactionResult> withdrawFosa({
     required String token,
     required int amountCents,
     required String channel,
@@ -656,7 +657,9 @@ class ProsaccoMemberAuthApi {
               : 'Withdrawal failed (${res.statusCode}).';
           throw msg;
         }
-        return;
+        return decoded is Map
+            ? MemberTransactionResult.fromJson(decoded)
+            : MemberTransactionResult(transactionRef: '');
       } catch (e) {
         lastError = e;
       }
@@ -665,7 +668,7 @@ class ProsaccoMemberAuthApi {
     throw lastError ?? 'Withdrawal failed.';
   }
 
-  Future<void> sendToMemberFosa({
+  Future<MemberTransactionResult> sendToMemberFosa({
     required String token,
     required String recipientMemberId,
     required int amountCents,
@@ -703,7 +706,9 @@ class ProsaccoMemberAuthApi {
               : 'Transfer failed (${res.statusCode}).';
           throw msg;
         }
-        return;
+        return decoded is Map
+            ? MemberTransactionResult.fromJson(decoded)
+            : MemberTransactionResult(transactionRef: '');
       } catch (e) {
         lastError = e;
       }
@@ -715,7 +720,7 @@ class ProsaccoMemberAuthApi {
   /// Transfers funds from the member's own FOSA to their BOSA.
   ///
   /// Backend: `POST /member/accounts/fosa/transfer-to-bosa`
-  Future<void> transferFosaToBosa({
+  Future<MemberTransactionResult> transferFosaToBosa({
     required String token,
     required int amountCents,
     String? securityOtpChallengeId,
@@ -749,7 +754,53 @@ class ProsaccoMemberAuthApi {
               : 'Transfer failed (${res.statusCode}).';
           throw msg;
         }
-        return;
+        return decoded is Map
+            ? MemberTransactionResult.fromJson(decoded)
+            : MemberTransactionResult(transactionRef: '');
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Transfer failed.';
+  }
+
+  Future<MemberTransactionResult> transferBosaToFosa({
+    required String token,
+    required int amountCents,
+    String? securityOtpChallengeId,
+    String? securityOtpCode,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{
+      'amountCents': amountCents,
+      'securityOtpChallengeId': securityOtpChallengeId,
+      'securityOtpCode': securityOtpCode,
+    }..removeWhere((_, v) => v == null));
+    final tryPaths = <String>[
+      '/member/accounts/bosa/transfer-to-fosa',
+      '/api/member/accounts/bosa/transfer-to-fosa',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 428 && decoded is Map && decoded['requiresOtp'] == true) {
+            throw MemberSecurityOtpRequiredException(
+              purpose: 'BOSA_TO_FOSA_TRANSFER',
+              amountCents: amountCents,
+              message: decoded['error']?.toString() ?? 'OTP is required.',
+            );
+          }
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Transfer failed (${res.statusCode}).';
+          throw msg;
+        }
+        return decoded is Map
+            ? MemberTransactionResult.fromJson(decoded)
+            : MemberTransactionResult(transactionRef: '');
       } catch (e) {
         lastError = e;
       }
@@ -832,7 +883,7 @@ class ProsaccoMemberAuthApi {
   /// Buys shares by debiting the member's FOSA account.
   ///
   /// Backend: `POST /member/accounts/share-capital/purchase/from-fosa`
-  Future<void> buySharesFromFosa({
+  Future<MemberTransactionResult> buySharesFromFosa({
     required String token,
     required int amountCents,
   }) async {
@@ -853,7 +904,9 @@ class ProsaccoMemberAuthApi {
               : 'Share purchase failed (${res.statusCode}).';
           throw msg;
         }
-        return;
+        return decoded is Map
+            ? MemberTransactionResult.fromJson(decoded)
+            : MemberTransactionResult(transactionRef: '');
       } catch (e) {
         lastError = e;
       }
@@ -864,7 +917,7 @@ class ProsaccoMemberAuthApi {
   /// Buys shares by debiting the member's BOSA account.
   ///
   /// Backend: `POST /member/accounts/share-capital/purchase/from-bosa`
-  Future<void> buySharesFromBosa({
+  Future<MemberTransactionResult> buySharesFromBosa({
     required String token,
     required int amountCents,
   }) async {
@@ -885,7 +938,9 @@ class ProsaccoMemberAuthApi {
               : 'Share purchase failed (${res.statusCode}).';
           throw msg;
         }
-        return;
+        return decoded is Map
+            ? MemberTransactionResult.fromJson(decoded)
+            : MemberTransactionResult(transactionRef: '');
       } catch (e) {
         lastError = e;
       }
@@ -971,7 +1026,7 @@ class ProsaccoMemberAuthApi {
     final accounts = await _fetchStatementAccountsList(token: token);
     try {
       final overview = await fetchMemberAccountsOverview(token: token);
-      return accounts.map((account) {
+      final enriched = accounts.map((account) {
         final type = (account.backendAccountType ?? '').toUpperCase();
         var balance = account.balance;
         switch (type) {
@@ -989,6 +1044,14 @@ class ProsaccoMemberAuthApi {
                 break;
               }
             }
+          case 'SS':
+          case 'SPECIAL_SAVINGS':
+            for (final ss in overview.specialSavings.accounts) {
+              if (ss.id == account.id) {
+                balance = ss.balanceCents / 100.0;
+                break;
+              }
+            }
           default:
             break;
         }
@@ -1001,6 +1064,23 @@ class ProsaccoMemberAuthApi {
           backendAccountType: account.backendAccountType,
         );
       }).toList();
+
+      final existingIds = enriched.map((a) => a.id).toSet();
+      for (final ss in overview.specialSavings.accounts) {
+        if (existingIds.contains(ss.id)) continue;
+        enriched.add(
+          StatementAccount(
+            id: ss.id,
+            name: ss.productName,
+            accountMask: ss.accountNumber,
+            balance: ss.balanceCents / 100.0,
+            tagline: 'Special Savings',
+            backendAccountType: 'SPECIAL_SAVINGS',
+          ),
+        );
+      }
+
+      return enriched;
     } catch (_) {
       return accounts;
     }
@@ -1150,6 +1230,39 @@ class ProsaccoMemberAuthApi {
     throw lastError ?? 'Failed to generate statement.';
   }
 
+  Future<Uint8List> downloadStatementPdf({
+    required String token,
+    required String accountType,
+    required String from,
+    required String to,
+  }) async {
+    final tryPaths = <String>[
+      '/member/statements/pdf',
+      '/api/member/statements/pdf',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path').replace(
+        queryParameters: <String, String>{
+          'accountType': accountType,
+          'from': from,
+          'to': to,
+        },
+      );
+      try {
+        final res = await _getBytes(uri, token: token);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 404) continue;
+          throw 'Failed to download statement PDF (${res.statusCode}).';
+        }
+        return res.bytes;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to download statement PDF.';
+  }
+
   /// Returns the list of years that have statement data.
   ///
   /// Backend: `GET /member/statements/annual/years`
@@ -1213,6 +1326,91 @@ class ProsaccoMemberAuthApi {
       }
     }
     throw lastError ?? 'Failed to load annual summary.';
+  }
+
+  Future<Map<String, dynamic>> requestLoanReport({
+    required String token,
+    required String loanAccountId,
+  }) async {
+    final body = jsonEncode({'loanAccountId': loanAccountId});
+    final tryPaths = ['/documents/member/loan-reports/request', '/api/documents/member/loan-reports/request'];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode == 404) continue;
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Loan report request failed (${res.statusCode}).';
+        }
+        return (decoded as Map?)?.cast<String, dynamic>() ?? {};
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Loan report request failed.';
+  }
+
+  Future<Map<String, dynamic>> loanReportPreview({
+    required String token,
+    required String documentId,
+  }) async {
+    final tryPaths = [
+      '/documents/member/loan-reports/$documentId/preview',
+      '/api/documents/member/loan-reports/$documentId/preview',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode == 404) continue;
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Preview failed (${res.statusCode}).';
+        }
+        return (decoded as Map?)?.cast<String, dynamic>() ?? {};
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Preview failed.';
+  }
+
+  Future<Map<String, dynamic>> loanReportDownload({
+    required String token,
+    required String documentId,
+  }) async {
+    final tryPaths = [
+      '/documents/member/loan-reports/$documentId/download',
+      '/api/documents/member/loan-reports/$documentId/download',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode == 404) continue;
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Download failed (${res.statusCode}).';
+        }
+        return (decoded as Map?)?.cast<String, dynamic>() ?? {};
+      } catch (e) {
+        if (e is String) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Download failed.';
   }
 
   Future<MemberProfileData> fetchMemberProfile({
@@ -1622,6 +1820,50 @@ class ProsaccoMemberAuthApi {
     throw lastError ?? 'Failed to save beneficiary.';
   }
 
+  Future<void> deleteMemberBeneficiary({
+    required String token,
+    required String id,
+    required String otpCode,
+  }) async {
+    final body = jsonEncode(<String, dynamic>{'otpCode': otpCode});
+    final tryPaths = <String>[
+      '/member/me/beneficiaries/$id',
+      '/api/member/me/beneficiaries/$id',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 15);
+      try {
+        final request = await client.deleteUrl(uri);
+        request.headers
+          ..set(HttpHeaders.acceptHeader, 'application/json')
+          ..set(HttpHeaders.contentTypeHeader, 'application/json')
+          ..set('Authorization', 'Bearer $token');
+        final deviceHeaders = await _deviceHeaders();
+        deviceHeaders.forEach(request.headers.set);
+        request.add(utf8.encode(body));
+        final res = await request.close().timeout(const Duration(seconds: 20));
+        final responseText =
+            await res.transform(utf8.decoder).join().timeout(const Duration(seconds: 20));
+        final decoded = _tryDecodeJson(responseText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          final msg = (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to delete beneficiary (${res.statusCode}).';
+          throw msg;
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      } finally {
+        client.close(force: true);
+      }
+    }
+    throw lastError ?? 'Failed to delete beneficiary.';
+  }
+
   Future<List<MemberTransferBeneficiaryData>> fetchTransferBeneficiaries({
     required String token,
   }) async {
@@ -1714,6 +1956,284 @@ class ProsaccoMemberAuthApi {
       }
     }
     throw lastError ?? 'Failed to delete transfer beneficiary.';
+  }
+
+  Future<MemberFeePreview> fetchFeePreview({
+    required String token,
+    required String serviceType,
+    required int amountCents,
+    Map<String, dynamic>? context,
+  }) async {
+    final body = jsonEncode({
+      'serviceType': serviceType,
+      'amount': amountCents,
+      if (context != null) 'context': context,
+    });
+    final tryPaths = [
+      '/member/fees/calculate/preview',
+      '/api/member/fees/calculate/preview',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 404) continue;
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to preview fee (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected fee preview response.';
+        return MemberFeePreview.fromJson(decoded);
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to preview fee.';
+  }
+
+  Future<MemberReceiptData> fetchMemberReceiptByReference({
+    required String token,
+    required String reference,
+  }) async {
+    final encoded = Uri.encodeComponent(reference);
+    final tryPaths = [
+      '/member/receipts/reference/$encoded',
+      '/api/member/receipts/reference/$encoded',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 404) continue;
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to load receipt (${res.statusCode}).';
+        }
+        if (decoded is! Map || decoded['receipt'] is! Map) {
+          throw 'Unexpected receipt response.';
+        }
+        return MemberReceiptData.fromJson(
+          (decoded['receipt'] as Map).cast<String, dynamic>(),
+          decoded['saccoName']?.toString() ?? 'ProSacco',
+        );
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load receipt.';
+  }
+
+  Future<String> fetchMemberReceiptHtmlByReference({
+    required String token,
+    required String reference,
+  }) async {
+    final encoded = Uri.encodeComponent(reference);
+    final tryPaths = [
+      '/member/receipts/reference/$encoded/html',
+      '/api/member/receipts/reference/$encoded/html',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          if (res.statusCode == 404) continue;
+          throw 'Failed to load receipt (${res.statusCode}).';
+        }
+        return res.bodyText;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load receipt.';
+  }
+
+  Future<ShareMarketplaceListingsResponse> fetchShareMarketplaceListings({
+    required String token,
+  }) async {
+    final tryPaths = ['/member/shares/marketplace/listings', '/api/member/shares/marketplace/listings'];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to load marketplace (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected marketplace response.';
+        return ShareMarketplaceListingsResponse.fromJson(decoded);
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load marketplace.';
+  }
+
+  Future<List<ShareMarketplaceListing>> fetchMyShareListings({required String token}) async {
+    final tryPaths = ['/member/shares/marketplace/my-listings', '/api/member/shares/marketplace/my-listings'];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to load my listings (${res.statusCode}).';
+        }
+        final list = decoded is Map ? decoded['listings'] : null;
+        if (list is! List) return const [];
+        return list.whereType<Map>().map(ShareMarketplaceListing.fromJson).toList();
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load my listings.';
+  }
+
+  Future<List<ShareMarketplaceTrade>> fetchShareMarketplaceTrades({required String token}) async {
+    final tryPaths = ['/member/shares/marketplace/my-trades', '/api/member/shares/marketplace/my-trades'];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to load trades (${res.statusCode}).';
+        }
+        final list = decoded is Map ? decoded['trades'] : null;
+        if (list is! List) return const [];
+        return list.whereType<Map>().map(ShareMarketplaceTrade.fromJson).toList();
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load trades.';
+  }
+
+  Future<ShareMarketplaceValuation> fetchShareMarketplaceValuation({required String token}) async {
+    final tryPaths = ['/member/shares/marketplace/valuation', '/api/member/shares/marketplace/valuation'];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _getJson(uri, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to load valuation (${res.statusCode}).';
+        }
+        if (decoded is! Map) throw 'Unexpected valuation response.';
+        return ShareMarketplaceValuation.fromJson(decoded);
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to load valuation.';
+  }
+
+  Future<void> createShareMarketplaceListing({
+    required String token,
+    required int shares,
+    required int pricePerShareCents,
+    String? expiresAt,
+    String? notes,
+  }) async {
+    final body = jsonEncode({
+      'shares': shares,
+      'pricePerShareCents': pricePerShareCents,
+      if (expiresAt != null) 'expiresAt': expiresAt,
+      if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+    });
+    final tryPaths = ['/member/shares/marketplace/listings', '/api/member/shares/marketplace/listings'];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to create listing (${res.statusCode}).';
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to create listing.';
+  }
+
+  Future<void> cancelShareMarketplaceListing({
+    required String token,
+    required String listingId,
+  }) async {
+    final tryPaths = [
+      '/member/shares/marketplace/listings/$listingId/cancel',
+      '/api/member/shares/marketplace/listings/$listingId/cancel',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _patchJson(uri, '{}', token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to cancel listing (${res.statusCode}).';
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to cancel listing.';
+  }
+
+  Future<void> buyShareMarketplaceListing({
+    required String token,
+    required String listingId,
+    required int shares,
+  }) async {
+    final body = jsonEncode({'shares': shares});
+    final tryPaths = [
+      '/member/shares/marketplace/listings/$listingId/buy',
+      '/api/member/shares/marketplace/listings/$listingId/buy',
+    ];
+    dynamic lastError;
+    for (final path in tryPaths) {
+      final uri = Uri.parse('$baseUrl$path');
+      try {
+        final res = await _postJson(uri, body, token: token);
+        final decoded = _tryDecodeJson(res.bodyText);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          throw (decoded is Map && decoded['error'] != null)
+              ? decoded['error'].toString()
+              : 'Failed to buy shares (${res.statusCode}).';
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? 'Failed to buy shares.';
   }
 
   Future<List<MemberKycDocumentData>> fetchMemberKycDocuments({
@@ -2025,7 +2545,11 @@ class ProsaccoMemberAuthApi {
             ? (decoded['message']?.toString() ?? 'Deposit verified.')
             : (decoded['message']?.toString() ??
                 (decoded['error']?.toString() ?? 'Deposit verification failed.'));
-        return _PaystackDepositVerifyResponse(ok: ok, message: message);
+        return _PaystackDepositVerifyResponse(
+          ok: ok,
+          message: message,
+          transactionRef: decoded['transactionRef']?.toString(),
+        );
       } catch (e) {
         lastError = e;
       }
@@ -2192,7 +2716,7 @@ class ProsaccoMemberAuthApi {
     for (final path in tryPaths) {
       final uri = Uri.parse('$baseUrl$path');
       final res = await _postJson(uri, body, token: token);
-      if (res.statusCode == 404 && path == '/member/consents') continue;
+      if (res.statusCode == 404) continue;
       if (res.statusCode < 200 || res.statusCode >= 300) {
         final decoded = _tryDecodeJson(res.bodyText);
         throw (decoded is Map && decoded['error'] != null)
@@ -2201,6 +2725,9 @@ class ProsaccoMemberAuthApi {
       }
       return;
     }
+    // Older deployed backends may not expose the consent endpoint yet. Do not
+    // block login; local consent version is still stored by the caller.
+    return;
   }
 
   Future<void> resendOtp({required String token}) async {
@@ -2468,6 +2995,30 @@ class ProsaccoMemberAuthApi {
       final responseText =
           await response.transform(utf8.decoder).join().timeout(const Duration(seconds: 40));
       return _HttpResponse(statusCode: response.statusCode, bodyText: responseText);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<_HttpBytesResponse> _getBytes(Uri uri, {required String token}) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 30);
+
+    try {
+      final request = await client.getUrl(uri);
+      request.headers
+        ..set(HttpHeaders.acceptHeader, 'application/pdf')
+        ..set('Authorization', 'Bearer $token');
+      final deviceHeaders = await _deviceHeaders();
+      deviceHeaders.forEach(request.headers.set);
+
+      final response = await request.close().timeout(const Duration(seconds: 60));
+      final chunks = <int>[];
+      await for (final chunk in response.timeout(const Duration(seconds: 60))) {
+        chunks.addAll(chunk);
+      }
+      final bytes = Uint8List.fromList(chunks);
+      return _HttpBytesResponse(statusCode: response.statusCode, bytes: bytes);
     } finally {
       client.close(force: true);
     }
@@ -2925,6 +3476,13 @@ class _HttpResponse {
   final String bodyText;
 }
 
+class _HttpBytesResponse {
+  _HttpBytesResponse({required this.statusCode, required this.bytes});
+
+  final int statusCode;
+  final Uint8List bytes;
+}
+
 class MemberSecurityOtpRequiredException implements Exception {
   MemberSecurityOtpRequiredException({
     required this.purpose,
@@ -3287,6 +3845,223 @@ class MemberTransferBeneficiaryData {
   }
 }
 
+int _shareMarketplaceToInt(dynamic value) {
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+class MemberFeePreview {
+  MemberFeePreview({
+    required this.feeAmount,
+    required this.totalAmount,
+    this.scheduleName,
+    this.calculationMethod,
+  });
+
+  final int feeAmount;
+  final int totalAmount;
+  final String? scheduleName;
+  final String? calculationMethod;
+
+  factory MemberFeePreview.fromJson(Map json) {
+    return MemberFeePreview(
+      feeAmount: _shareMarketplaceToInt(json['feeAmount']),
+      totalAmount: _shareMarketplaceToInt(json['totalAmount']),
+      scheduleName: json['scheduleName']?.toString(),
+      calculationMethod: json['calculationMethod']?.toString(),
+    );
+  }
+}
+
+class MemberTransactionResult {
+  MemberTransactionResult({
+    required this.transactionRef,
+    this.amountCents,
+    this.feeCents,
+    this.message,
+  });
+
+  final String transactionRef;
+  final int? amountCents;
+  final int? feeCents;
+  final String? message;
+
+  factory MemberTransactionResult.fromJson(Map json) {
+    return MemberTransactionResult(
+      transactionRef: json['transactionRef']?.toString() ?? '',
+      amountCents: json['amountCents'] == null
+          ? null
+          : _shareMarketplaceToInt(json['amountCents']),
+      feeCents: json['feeCents'] == null
+          ? null
+          : _shareMarketplaceToInt(json['feeCents']),
+      message: json['message']?.toString(),
+    );
+  }
+}
+
+class MemberReceiptData {
+  MemberReceiptData({
+    required this.saccoName,
+    required this.receiptType,
+    required this.reference,
+    required this.accountType,
+    required this.amountCents,
+    required this.createdAt,
+    this.paymentMethod,
+    this.payload = const {},
+  });
+
+  final String saccoName;
+  final String receiptType;
+  final String reference;
+  final String accountType;
+  final int amountCents;
+  final String createdAt;
+  final String? paymentMethod;
+  final Map<String, dynamic> payload;
+
+  factory MemberReceiptData.fromJson(Map<String, dynamic> json, String saccoName) {
+    final payload = json['payload'];
+    return MemberReceiptData(
+      saccoName: saccoName,
+      receiptType: json['receiptType']?.toString() ?? 'RECEIPT',
+      reference: json['reference']?.toString() ?? '',
+      accountType: json['accountType']?.toString() ?? '',
+      amountCents: _shareMarketplaceToInt(json['amountCents']),
+      createdAt: json['createdAt']?.toString() ?? '',
+      paymentMethod: json['paymentMethod']?.toString(),
+      payload: payload is Map ? payload.cast<String, dynamic>() : const {},
+    );
+  }
+}
+
+class ShareMarketplaceListingsResponse {
+  ShareMarketplaceListingsResponse({
+    required this.listings,
+    required this.memberNumber,
+    required this.displayName,
+  });
+
+  final List<ShareMarketplaceListing> listings;
+  final String memberNumber;
+  final String displayName;
+
+  factory ShareMarketplaceListingsResponse.fromJson(Map json) {
+    final list = json['listings'];
+    final me = json['me'] is Map ? json['me'] as Map : const {};
+    return ShareMarketplaceListingsResponse(
+      listings: list is List
+          ? list.whereType<Map>().map(ShareMarketplaceListing.fromJson).toList()
+          : const [],
+      memberNumber: me['memberNumber']?.toString() ?? '',
+      displayName: me['displayName']?.toString() ?? '',
+    );
+  }
+}
+
+class ShareMarketplaceListing {
+  ShareMarketplaceListing({
+    required this.id,
+    required this.totalSharesOffered,
+    required this.remainingShares,
+    required this.pricePerShareCents,
+    required this.status,
+    required this.createdAt,
+    this.expiresAt,
+    this.sellerName,
+    this.sellerMemberNumber,
+  });
+
+  final String id;
+  final int totalSharesOffered;
+  final int remainingShares;
+  final int pricePerShareCents;
+  final String status;
+  final String createdAt;
+  final String? expiresAt;
+  final String? sellerName;
+  final String? sellerMemberNumber;
+
+  int get totalAmountCents => remainingShares * pricePerShareCents;
+
+  factory ShareMarketplaceListing.fromJson(Map json) {
+    final seller = json['seller'] is Map ? json['seller'] as Map : const {};
+    return ShareMarketplaceListing(
+      id: json['id']?.toString() ?? '',
+      totalSharesOffered: _shareMarketplaceToInt(json['totalSharesOffered']),
+      remainingShares: _shareMarketplaceToInt(json['remainingShares']),
+      pricePerShareCents: _shareMarketplaceToInt(json['pricePerShareCents']),
+      status: json['status']?.toString() ?? '',
+      createdAt: json['createdAt']?.toString() ?? '',
+      expiresAt: json['expiresAt']?.toString(),
+      sellerName: seller['displayName']?.toString(),
+      sellerMemberNumber: seller['memberNumber']?.toString(),
+    );
+  }
+}
+
+class ShareMarketplaceTrade {
+  ShareMarketplaceTrade({
+    required this.id,
+    required this.side,
+    required this.shares,
+    required this.pricePerShareCents,
+    required this.totalAmountCents,
+    required this.status,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String side;
+  final int shares;
+  final int pricePerShareCents;
+  final int totalAmountCents;
+  final String status;
+  final String createdAt;
+
+  factory ShareMarketplaceTrade.fromJson(Map json) {
+    return ShareMarketplaceTrade(
+      id: json['id']?.toString() ?? '',
+      side: json['side']?.toString() ?? '',
+      shares: _shareMarketplaceToInt(json['shares']),
+      pricePerShareCents: _shareMarketplaceToInt(json['pricePerShareCents']),
+      totalAmountCents: _shareMarketplaceToInt(json['totalAmountCents']),
+      status: json['status']?.toString() ?? '',
+      createdAt: json['createdAt']?.toString() ?? '',
+    );
+  }
+}
+
+class ShareMarketplaceValuation {
+  ShareMarketplaceValuation({
+    required this.totalShares,
+    required this.totalAmountCents,
+    required this.pricePerShareCents,
+    required this.markToMarketCents,
+    required this.reservedShares,
+    required this.availableToSellShares,
+  });
+
+  final int totalShares;
+  final int totalAmountCents;
+  final int pricePerShareCents;
+  final int markToMarketCents;
+  final int reservedShares;
+  final int availableToSellShares;
+
+  factory ShareMarketplaceValuation.fromJson(Map json) {
+    return ShareMarketplaceValuation(
+      totalShares: _shareMarketplaceToInt(json['totalShares']),
+      totalAmountCents: _shareMarketplaceToInt(json['totalAmountCents']),
+      pricePerShareCents: _shareMarketplaceToInt(json['pricePerShareCents']),
+      markToMarketCents: _shareMarketplaceToInt(json['markToMarketCents']),
+      reservedShares: _shareMarketplaceToInt(json['reservedShares']),
+      availableToSellShares: _shareMarketplaceToInt(json['availableToSellShares']),
+    );
+  }
+}
+
 class MemberKycDocumentData {
   MemberKycDocumentData({
     required this.id,
@@ -3340,10 +4115,15 @@ class MemberNotificationData {
 }
 
 class _PaystackDepositVerifyResponse {
-  const _PaystackDepositVerifyResponse({required this.ok, required this.message});
+  const _PaystackDepositVerifyResponse({
+    required this.ok,
+    required this.message,
+    this.transactionRef,
+  });
 
   final bool ok;
   final String message;
+  final String? transactionRef;
 }
 
 class _MemberMeSummaryResponse {
@@ -3883,6 +4663,8 @@ class StatementGenerateResult {
     required this.from,
     required this.to,
     required this.transactions,
+    required this.saccoName,
+    required this.memberName,
   });
 
   final String accountType;
@@ -3890,6 +4672,8 @@ class StatementGenerateResult {
   final String from;
   final String to;
   final List<StatementTxnRow> transactions;
+  final String saccoName;
+  final String memberName;
 
   factory StatementGenerateResult.fromJson(Map<String, dynamic> json) {
     final txnsJson = json['transactions'];
@@ -3899,12 +4683,16 @@ class StatementGenerateResult {
         if (t is Map<String, dynamic>) txns.add(StatementTxnRow.fromJson(t));
       }
     }
+    final report = json['report'];
+    final totals = report is Map ? report['totals'] : null;
     return StatementGenerateResult(
       accountType: json['accountType']?.toString() ?? '',
       accountNumber: json['accountNumber']?.toString() ?? '',
       from: json['from']?.toString() ?? '',
       to: json['to']?.toString() ?? '',
       transactions: txns,
+      saccoName: totals is Map ? totals['sacco_name']?.toString() ?? 'ProSacco' : 'ProSacco',
+      memberName: totals is Map ? totals['member']?.toString() ?? 'Member' : 'Member',
     );
   }
 
@@ -4117,6 +4905,7 @@ class LoanApplicationData {
     this.loanAccountBalanceCents,
     this.loanAccountStatus,
     this.publicLoanId,
+    this.loanAccountId,
   });
 
   final String id;
@@ -4129,6 +4918,7 @@ class LoanApplicationData {
   final int? loanAccountBalanceCents;
   final String? loanAccountStatus;
   final String? publicLoanId;
+  final String? loanAccountId;
 
   static int _i(dynamic v) => v is num ? v.toInt() : int.tryParse(v?.toString() ?? '') ?? 0;
 
@@ -4146,6 +4936,7 @@ class LoanApplicationData {
       loanAccountBalanceCents: loanAccount != null ? _i(loanAccount['balanceCents']) : null,
       loanAccountStatus: loanAccount?['status']?.toString(),
       publicLoanId: json['publicLoanId']?.toString(),
+      loanAccountId: loanAccount?['id']?.toString() ?? json['loanAccountId']?.toString(),
     );
   }
 }

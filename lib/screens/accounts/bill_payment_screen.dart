@@ -120,6 +120,19 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
       showFlowErrorSnack(context, 'Insufficient FOSA balance.');
       return;
     }
+    final confirmed = await showFlowConfirmationSheet(
+      context,
+      title: 'Confirm bill payment',
+      rows: [
+        ('Biller', _biller!.name),
+        ('Reference', _reference.text.trim()),
+        ('Amount', 'KES ${formatKes(amountCents / 100)}'),
+        ('Pay from', _source == 'FOSA' ? (_fosa?.name ?? 'FOSA') : 'M-Pesa'),
+      ],
+      confirmLabel: 'Submit Payment',
+      icon: Icons.receipt_long_rounded,
+    );
+    if (!confirmed) return;
     setState(() => _submitting = true);
     try {
       final res = await ProsaccoMemberAuthApi().submitUtilityPayment(
@@ -134,10 +147,12 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
         sourcePhone: _mpesaPhone.text.trim(),
       );
       if (!mounted) return;
-      await showFlowSuccessSheet(
+      await showTransactionReceiptSheet(
         context,
-        title: 'Payment request recorded',
-        message: '${_biller!.name} request ref ${res.transactionRef} is ${res.status}. ${res.message}',
+        authToken: widget.authToken,
+        transactionRef: res.transactionRef,
+        fallbackTitle: 'Payment request recorded',
+        fallbackMessage: '${_biller!.name} request ref ${res.transactionRef} is ${res.status}. ${res.message}',
         icon: Icons.receipt_long_rounded,
       );
     } catch (e) {
