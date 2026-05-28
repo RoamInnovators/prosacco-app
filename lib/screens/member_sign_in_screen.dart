@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:local_auth/local_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/prosacco_palette.dart';
 import '../widgets/prosacco_auth_backdrop.dart';
@@ -11,12 +13,17 @@ import 'member_reset_password_screen.dart';
 
 /// Secure member login — layout from `prosacco design/login/code.html`.
 class MemberSignInScreen extends StatefulWidget {
-  const MemberSignInScreen({super.key, this.onLoginSubmitted});
+  const MemberSignInScreen({
+    super.key,
+    this.onLoginSubmitted,
+    this.onBiometricLoginRequested,
+  });
 
   /// Called after local validation; next step depends on backend response
   /// (`POST /member/login` when wired).
   final Future<void> Function(String memberIdentifier, String password)?
       onLoginSubmitted;
+  final Future<void> Function()? onBiometricLoginRequested;
 
   @override
   State<MemberSignInScreen> createState() => _MemberSignInScreenState();
@@ -29,8 +36,14 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
   final _passwordFocus = FocusNode();
   bool _obscurePassword = true;
   bool _submitting = false;
+  bool _biometricChecking = true;
+  bool _biometricAvailable = false;
+  bool _biometricSubmitting = false;
   String? _errorMessage;
 
+  static const String _spTokenKey = 'prosacco_member_token';
+  static const String _spBiometricLoginEnabledKey =
+      'prosacco_biometric_login_enabled';
   static const int _maxLoginAttempts = 5;
   int _attemptsRemaining = _maxLoginAttempts - 1; // matches old static hint: "4 remaining"
   DateTime? _lockedUntil;
@@ -58,6 +71,7 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
   @override
   void initState() {
     super.initState();
+    _loadBiometricOption();
     if (_isLocked) {
       _lockTimer?.cancel();
       _lockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -72,6 +86,30 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
         } else {
           setState(() {});
         }
+      });
+    }
+  }
+
+  Future<void> _loadBiometricOption() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final hasSavedSession = (sp.getString(_spTokenKey) ?? '').isNotEmpty;
+      final enabled = sp.getBool(_spBiometricLoginEnabledKey) ?? true;
+      var available = false;
+      if (hasSavedSession && enabled && widget.onBiometricLoginRequested != null) {
+        final auth = LocalAuthentication();
+        available = await auth.isDeviceSupported() && await auth.canCheckBiometrics;
+      }
+      if (!mounted) return;
+      setState(() {
+        _biometricAvailable = available;
+        _biometricChecking = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _biometricAvailable = false;
+        _biometricChecking = false;
       });
     }
   }
@@ -171,6 +209,24 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
     } finally {
       if (!mounted) return;
       setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _submitBiometric() async {
+    if (_biometricSubmitting || _submitting || _isLocked) return;
+    final handler = widget.onBiometricLoginRequested;
+    if (handler == null) return;
+    setState(() {
+      _biometricSubmitting = true;
+      _errorMessage = null;
+    });
+    try {
+      await handler();
+    } catch (e) {
+      if (!mounted) return;
+      _showError(e?.toString() ?? 'Biometric login failed.');
+    } finally {
+      if (mounted) setState(() => _biometricSubmitting = false);
     }
   }
 
@@ -400,6 +456,50 @@ class _MemberSignInScreenState extends State<MemberSignInScreen> {
               ],
             ),
           ),
+          if (!_biometricChecking && _biometricAvailable) ...[
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(child: Divider(color: context.pal.outline.withValues(alpha: 0.18))),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Text(
+                    'OR',
+                    style: textTheme.labelSmall?.copyWith(
+                      color: context.pal.onSurfaceVariant,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ),
+                Expanded(child: Divider(color: context.pal.outline.withValues(alpha: 0.18))),
+              ],
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: (_biometricSubmitting || _submitting || _isLocked)
+                  ? null
+                  : _submitBiometric,
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                side: BorderSide(color: context.pal.primary.withValues(alpha: 0.35)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              icon: Icon(
+                Icons.fingerprint_rounded,
+                color: context.pal.primary,
+              ),
+              label: Text(
+                _biometricSubmitting ? 'Checking biometrics…' : 'Log in with biometrics',
+                style: textTheme.titleSmall?.copyWith(
+                  color: context.pal.primary,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

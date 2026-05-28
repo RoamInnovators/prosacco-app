@@ -138,6 +138,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
         _AppPhase.signIn => MemberSignInScreen(
             key: const ValueKey('signin'),
             onLoginSubmitted: (id, password) => _handleLoginSubmitted(id, password),
+            onBiometricLoginRequested: () => _handleBiometricLoginRequested(),
           ),
         _AppPhase.otp => MemberOtpScreen(
             key: const ValueKey('otp'),
@@ -250,6 +251,37 @@ class _AppBootstrapState extends State<AppBootstrap> {
     );
     await sp.setString(_spPrivacyConsentKey, _privacyConsentVersion);
     return true;
+  }
+
+  Future<void> _handleBiometricLoginRequested() async {
+    if (!_sessionLoaded) {
+      await _loadSavedSession();
+    }
+    final token = _authToken;
+    if (token == null || token.isEmpty) {
+      throw 'No saved session found. Please sign in with your password first.';
+    }
+    if (!await _requireBiometricIfAvailable()) {
+      throw 'Biometric verification was cancelled.';
+    }
+    if (!await _ensurePrivacyConsent(token)) {
+      await _clearSession();
+      _authToken = null;
+      PushNotificationsService.setAuthToken(null);
+      if (mounted) setState(() => _phase = _AppPhase.signIn);
+      throw 'Privacy consent is required to continue.';
+    }
+    if (!mounted) return;
+    PushNotificationsService.setAuthToken(token);
+    setState(() {
+      _loginIdentifier = null;
+      _mfaToken = null;
+      _deviceBindingToken = null;
+      _deviceBindingChallengeId = null;
+      _phase = _AppPhase.home;
+    });
+    final name = _homeDisplayName.trim();
+    _enqueueWelcomeSnackBar(name.isNotEmpty ? 'Welcome back, $name!' : 'Biometric login successful.');
   }
 
   Future<void> _handleLoginSubmitted(String id, String password) async {
