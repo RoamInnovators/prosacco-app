@@ -7,6 +7,26 @@ import '../../widgets/prosacco_animated_loader.dart';
 import 'account_flow_widgets.dart';
 import 'account_models.dart';
 
+final _demoNetworks = <MemberUtilityNetwork>[
+  MemberUtilityNetwork(
+    code: 'DEMO-SAFARICOM',
+    name: 'Safaricom Demo',
+    bundles: [
+      MemberDataBundle(code: 'DEMO-SAF-1GB', name: '1GB Daily Demo', amountCents: 9900, validity: '24 hours'),
+      MemberDataBundle(code: 'DEMO-SAF-5GB', name: '5GB Weekly Demo', amountCents: 50000, validity: '7 days'),
+    ],
+  ),
+  MemberUtilityNetwork(
+    code: 'DEMO-AIRTEL',
+    name: 'Airtel Demo',
+    bundles: [
+      MemberDataBundle(code: 'DEMO-AIR-500MB', name: '500MB Daily Demo', amountCents: 5000, validity: '24 hours'),
+      MemberDataBundle(code: 'DEMO-AIR-2GB', name: '2GB Weekly Demo', amountCents: 25000, validity: '7 days'),
+    ],
+  ),
+  MemberUtilityNetwork(code: 'DEMO-TELKOM', name: 'Telkom Demo'),
+];
+
 class AirtimeScreen extends StatefulWidget {
   const AirtimeScreen({super.key, required this.authToken});
 
@@ -72,7 +92,7 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
                 orElse: () => _options.first,
               )
             : null;
-        _network = catalog.networks.isNotEmpty ? catalog.networks.first : null;
+        _network = catalog.enabled && catalog.networks.isNotEmpty ? catalog.networks.first : _demoNetworks.first;
         _phone.text = profile.phone;
         _mpesaPhone.text = profile.phone;
         _loading = false;
@@ -81,6 +101,7 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
       if (!mounted) return;
       setState(() {
         _loadError = e?.toString() ?? 'Failed to load accounts.';
+        _network = _demoNetworks.first;
         _loading = false;
       });
     }
@@ -106,11 +127,18 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
     return digits.length >= 9 && amount != null && amount > 0 && _network != null;
   }
 
+  bool get _demoMode {
+    final catalog = _catalog;
+    return catalog == null || !catalog.enabled || catalog.networks.isEmpty;
+  }
+
+  List<MemberUtilityNetwork> get _displayNetworks => _demoMode ? _demoNetworks : (_catalog?.networks ?? const []);
+
   Future<void> _submit() async {
     final amountCents = _amountCents;
     final network = _network;
     if (!_valid || amountCents == null || network == null) return;
-    if (_source == 'FOSA' && _from != null && amountCents > (_from!.balance * 100).round()) {
+    if (!_demoMode && _source == 'FOSA' && _from != null && amountCents > (_from!.balance * 100).round()) {
       showFlowErrorSnack(context, 'Insufficient FOSA balance.');
       return;
     }
@@ -127,6 +155,10 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
       icon: Icons.phone_android_rounded,
     );
     if (!confirmed) return;
+    if (_demoMode) {
+      showFlowErrorSnack(context, 'Demo only: no airtime or data request was sent.');
+      return;
+    }
     setState(() => _submitting = true);
     try {
       final result = await ProsaccoMemberAuthApi().submitUtilityPayment(
@@ -170,6 +202,7 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
     }
 
     final catalog = _catalog;
+    final demoMode = _demoMode;
     return Scaffold(
       backgroundColor: p.surface,
       appBar: AppBar(title: const Text('Airtime & Data')),
@@ -181,18 +214,19 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
               padding: const EdgeInsets.only(bottom: 12),
               child: Text(_loadError!, style: TextStyle(color: p.error)),
             ),
-          if (catalog == null || !catalog.enabled)
-            const FlowSectionCard(
-              title: 'Not available',
-              child: Text('Airtime and data are not enabled by your SACCO yet.'),
-            )
-          else ...[
+          _BackendStatusCard(
+            message: demoMode
+                ? 'Demo mode: sample networks and bundles are shown for walkthrough only. No request will be sent.'
+                : 'Airtime and data are enabled by your SACCO. Provider: ${catalog?.displayName ?? 'SACCO payment provider'} (${catalog?.providerMode ?? 'FRAMEWORK_ONLY'}).',
+            mpesaEnabled: !demoMode && (catalog?.mpesaEnabled ?? false),
+          ),
+          const SizedBox(height: 14),
           FlowSectionCard(
             title: 'Network',
             child: Wrap(
               spacing: 10,
               runSpacing: 10,
-              children: catalog.networks.map((n) {
+              children: _displayNetworks.map((n) {
                 final selected = _network?.code == n.code;
                 return ChoiceChip(
                   selected: selected,
@@ -325,9 +359,9 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
                 RadioListTile<String>(
                   value: 'MPESA',
                   groupValue: _source,
-                  onChanged: catalog.mpesaEnabled ? (_) => setState(() => _source = 'MPESA') : null,
+                  onChanged: !demoMode && (catalog?.mpesaEnabled ?? false) ? (_) => setState(() => _source = 'MPESA') : null,
                   title: const Text('M-Pesa STK Push'),
-                  subtitle: Text(catalog.mpesaEnabled ? 'Use phone prompt' : 'Not enabled by SACCO'),
+                  subtitle: Text(!demoMode && (catalog?.mpesaEnabled ?? false) ? 'Use phone prompt' : 'Not enabled in demo mode'),
                 ),
                 if (_source == 'MPESA')
                   TextField(
@@ -349,12 +383,11 @@ class _AirtimeScreenState extends State<AirtimeScreen> {
                 borderRadius: BorderRadius.circular(16),
               ),
             ),
-            child: const Text(
-              'Submit request',
+            child: Text(
+              demoMode ? 'Preview demo request' : 'Submit request',
               style: TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
-          ],
         ],
       ),
     );
@@ -372,5 +405,37 @@ class _NetworkLogo extends StatelessWidget {
       return CircleAvatar(backgroundImage: NetworkImage(url));
     }
     return CircleAvatar(child: Text(network.name.isEmpty ? '?' : network.name.substring(0, 1).toUpperCase()));
+  }
+}
+
+class _BackendStatusCard extends StatelessWidget {
+  const _BackendStatusCard({
+    required this.message,
+    required this.mpesaEnabled,
+  });
+
+  final String message;
+  final bool mpesaEnabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.pal;
+    return FlowSectionCard(
+      title: 'Backend status',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(message),
+          const SizedBox(height: 8),
+          Text(
+            mpesaEnabled ? 'M-Pesa payment source is enabled.' : 'M-Pesa payment source is disabled by your SACCO.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: mpesaEnabled ? p.success : p.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
   }
 }

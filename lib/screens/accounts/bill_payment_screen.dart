@@ -6,6 +6,20 @@ import '../../widgets/prosacco_animated_loader.dart';
 import 'account_flow_widgets.dart';
 import 'account_models.dart';
 
+final _demoBillCategories = <MemberUtilityCategory>[
+  MemberUtilityCategory(code: 'ELECTRICITY', label: 'Electricity', icon: 'bolt', providerHint: 'KPLC', billerCount: 1),
+  MemberUtilityCategory(code: 'WATER', label: 'Water', icon: 'water_drop', providerHint: 'Water utility', billerCount: 1),
+  MemberUtilityCategory(code: 'TV', label: 'TV/Cable', icon: 'tv', providerHint: 'Pay TV', billerCount: 1),
+  MemberUtilityCategory(code: 'INTERNET', label: 'Internet', icon: 'public', providerHint: 'Home internet', billerCount: 1),
+];
+
+final _demoBillers = <MemberUtilityBiller>[
+  MemberUtilityBiller(code: 'DEMO-KPLC', name: 'KPLC Prepaid Token', category: 'ELECTRICITY', minAmountCents: 1000),
+  MemberUtilityBiller(code: 'DEMO-WATER', name: 'County Water Bill', category: 'WATER', minAmountCents: 5000),
+  MemberUtilityBiller(code: 'DEMO-TV', name: 'Pay TV Subscription', category: 'TV', minAmountCents: 10000),
+  MemberUtilityBiller(code: 'DEMO-INTERNET', name: 'Home Internet Bill', category: 'INTERNET', minAmountCents: 10000),
+];
+
 class BillPaymentScreen extends StatefulWidget {
   const BillPaymentScreen({super.key, required this.authToken});
 
@@ -83,12 +97,20 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
 
   List<MemberUtilityBiller> get _billersForCategory {
     final category = _category;
-    final catalog = _catalog;
-    if (category == null || catalog == null) return const [];
-    return catalog.billers
+    if (category == null) return const [];
+    return _displayBillers
         .where((b) => b.category.toUpperCase() == category.code.toUpperCase())
         .toList();
   }
+
+  bool get _demoMode {
+    final catalog = _catalog;
+    return catalog == null || !catalog.enabled || catalog.billers.isEmpty;
+  }
+
+  List<MemberUtilityCategory> get _displayCategories => _demoMode ? _demoBillCategories : (_catalog?.categories ?? const []);
+
+  List<MemberUtilityBiller> get _displayBillers => _demoMode ? _demoBillers : (_catalog?.billers ?? const []);
 
   int? get _amountCents {
     final amt = double.tryParse(_amount.text.replaceAll(',', ''));
@@ -97,6 +119,10 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
 
   Future<void> _validate() async {
     if (_biller == null || _reference.text.trim().isEmpty) return;
+    if (_demoMode) {
+      setState(() => _validationMessage = 'Demo validation only. No provider lookup was made.');
+      return;
+    }
     try {
       final res = await ProsaccoMemberAuthApi().validateUtilityPayment(
         token: widget.authToken,
@@ -116,7 +142,7 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
   Future<void> _submit() async {
     final amountCents = _amountCents;
     if (_biller == null || amountCents == null) return;
-    if (_source == 'FOSA' && _fosa != null && amountCents > (_fosa!.balance * 100).round()) {
+    if (!_demoMode && _source == 'FOSA' && _fosa != null && amountCents > (_fosa!.balance * 100).round()) {
       showFlowErrorSnack(context, 'Insufficient FOSA balance.');
       return;
     }
@@ -133,6 +159,10 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
       icon: Icons.receipt_long_rounded,
     );
     if (!confirmed) return;
+    if (_demoMode) {
+      showFlowErrorSnack(context, 'Demo only: no bill payment request was sent.');
+      return;
+    }
     setState(() => _submitting = true);
     try {
       final res = await ProsaccoMemberAuthApi().submitUtilityPayment(
@@ -173,6 +203,7 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
       );
     }
     final catalog = _catalog;
+    final demoMode = _demoMode;
     return Scaffold(
       backgroundColor: p.surface,
       appBar: AppBar(title: const Text('Pay Bills')),
@@ -184,15 +215,20 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
               padding: const EdgeInsets.only(bottom: 12),
               child: Text(_error!, style: TextStyle(color: p.error)),
             ),
-          if (catalog == null || !catalog.enabled)
-            _UnavailableCard(message: 'Bill payments are not enabled by your SACCO yet.')
-          else ...[
-            FlowSectionCard(
+          _BackendStatusCard(
+              title: 'Backend status',
+            message: demoMode
+                ? 'Demo mode: sample billers are shown for walkthrough only. No payment request will be sent.'
+                : 'Bill payments are enabled by your SACCO. Provider: ${catalog?.displayName ?? 'SACCO payment provider'} (${catalog?.providerMode ?? 'FRAMEWORK_ONLY'}).',
+            mpesaEnabled: !demoMode && (catalog?.mpesaEnabled ?? false),
+            ),
+          const SizedBox(height: 14),
+          FlowSectionCard(
               title: 'Bill category',
               child: Wrap(
                 spacing: 10,
                 runSpacing: 10,
-                children: catalog.categories.map((c) {
+              children: _displayCategories.map((c) {
                   final selected = _category?.code == c.code;
                   return ChoiceChip(
                     selected: selected,
@@ -269,7 +305,7 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
                     _SourcePicker(
                       source: _source,
                       fosa: _fosa,
-                      mpesaEnabled: catalog.mpesaEnabled,
+                    mpesaEnabled: !demoMode && (catalog?.mpesaEnabled ?? false),
                       mpesaPhone: _mpesaPhone,
                       onChanged: (v) => setState(() => _source = v),
                     ),
@@ -279,10 +315,9 @@ class _BillPaymentScreenState extends State<BillPaymentScreen> {
               const SizedBox(height: 20),
               FilledButton(
                 onPressed: _submitting ? null : _submit,
-                child: Text(_submitting ? 'Submitting…' : 'Submit payment request'),
+              child: Text(_submitting ? 'Submitting…' : (demoMode ? 'Preview demo request' : 'Submit payment request')),
               ),
             ],
-          ],
         ],
       ),
     );
@@ -348,15 +383,36 @@ class _ProviderLogo extends StatelessWidget {
   }
 }
 
-class _UnavailableCard extends StatelessWidget {
-  const _UnavailableCard({required this.message});
+class _BackendStatusCard extends StatelessWidget {
+  const _BackendStatusCard({
+    required this.title,
+    required this.message,
+    required this.mpesaEnabled,
+  });
+
+  final String title;
   final String message;
+  final bool mpesaEnabled;
 
   @override
   Widget build(BuildContext context) {
+    final p = context.pal;
     return FlowSectionCard(
-      title: 'Not available',
-      child: Text(message),
+      title: title,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(message),
+          const SizedBox(height: 8),
+          Text(
+            mpesaEnabled ? 'M-Pesa payment source is enabled.' : 'M-Pesa payment source is disabled by your SACCO.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: mpesaEnabled ? p.success : p.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
     );
   }
 }
